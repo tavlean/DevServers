@@ -9,6 +9,7 @@ import {
   List,
   Toast,
   confirmAlert,
+  environment,
   getPreferenceValues,
   openExtensionPreferences,
   showToast,
@@ -22,6 +23,71 @@ import {
   restartServer,
 } from "./servers";
 import { DevServer } from "./types";
+
+// TEMP: set to true to render a curated set of fake servers for screenshots.
+// Delete this block and the override below before shipping.
+const DEBUG_DUMMY = true;
+const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+// Read a file from assets/dummy-favicons and return it as a data URL.
+// Used to inject real-looking favicons into screenshot dummy data.
+// Uses Raycast's environment.assetsPath which correctly points to the
+// bundled assets folder regardless of where Raycast installed the extension.
+function readAssetAsDataUrl(filename: string, mime: string): string {
+  const path = `${environment.assetsPath}/dummy-favicons/${filename}`;
+  const data = require("fs").readFileSync(path).toString("base64");
+  return `data:${mime};base64,${data}`;
+}
+const DUMMY_FAVICONS: Record<string, string> = {
+  "5173": readAssetAsDataUrl("rankedagi.svg", "image/svg+xml"),
+  "4321": readAssetAsDataUrl("artusion.svg", "image/svg+xml"),
+  "3000": readAssetAsDataUrl("tavlean.png", "image/png"),
+  "3001": readAssetAsDataUrl("tavlean.png", "image/png"),
+};
+const DUMMY_SERVERS: DevServer[] = [
+  // RankedAGI — SvelteKit, oldest, anchors top of list
+  {
+    pid: 90001,
+    port: "5173",
+    url: "http://localhost:5173",
+    tool: "sveltekit",
+    runtime: "node",
+    cwd: "/Users/tav/Development/Tavlean/RankedAGI",
+    projectName: "RankedAGI",
+    startedAt: minutesAgo(132),
+  },
+  // Artusion — Astro
+  {
+    pid: 90010,
+    port: "4321",
+    url: "http://localhost:4321",
+    tool: "astro",
+    runtime: "node",
+    cwd: "/Users/tav/Development/Websites/Artusion",
+    projectName: "Artusion",
+    startedAt: minutesAgo(48),
+  },
+  // Tavlean — two Next.js servers (web + admin) to demonstrate grouping
+  {
+    pid: 90020,
+    port: "3000",
+    url: "http://localhost:3000",
+    tool: "next",
+    runtime: "node",
+    cwd: "/Users/tav/Development/Tavlean/Tavlean",
+    projectName: "Tavlean",
+    startedAt: minutesAgo(12),
+  },
+  {
+    pid: 90021,
+    port: "3001",
+    url: "http://localhost:3001",
+    tool: "next",
+    runtime: "node",
+    cwd: "/Users/tav/Development/Tavlean/Tavlean",
+    projectName: "Tavlean",
+    startedAt: minutesAgo(0.4),
+  },
+];
 
 interface Preferences {
   showFullPath: boolean;
@@ -109,6 +175,8 @@ async function urlExists(url: string): Promise<boolean> {
 //  2. /favicon.ico (the convention every framework starter ships with)
 //  3. undefined → caller renders a framework-tinted globe instead.
 async function detectFaviconUrl(port: string): Promise<string | undefined> {
+  // TEMP: dummy-mode short-circuit so screenshot data renders branded favicons
+  if (DEBUG_DUMMY && DUMMY_FAVICONS[port]) return DUMMY_FAVICONS[port];
   const origin = `http://localhost:${port}`;
 
   // 1. Page <link rel="icon">
@@ -257,13 +325,15 @@ export default function Command() {
 
   const {
     isLoading,
-    data: servers = [],
+    data: realServers = [],
     mutate,
     revalidate,
   } = useExec("/bin/zsh", ["-c", FETCH_SCRIPT], {
     parseOutput: ({ stdout }) => parseServers(stdout),
     keepPreviousData: true,
   });
+  // TEMP: screenshot override — see DEBUG_DUMMY at top of file
+  const servers = DEBUG_DUMMY ? DUMMY_SERVERS : realServers;
 
   useEffect(() => {
     const id = setInterval(revalidate, parseInt(prefs.refreshInterval) * 1000);
