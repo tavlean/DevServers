@@ -2,6 +2,7 @@ import {
   Action,
   ActionPanel,
   Alert,
+  Application,
   Color,
   Icon,
   Image,
@@ -9,10 +10,11 @@ import {
   Toast,
   confirmAlert,
   getPreferenceValues,
+  openExtensionPreferences,
   showToast,
 } from "@raycast/api";
-import { showFailureToast, useExec } from "@raycast/utils";
-import { useEffect, useRef, useState } from "react";
+import { showFailureToast, useCachedPromise, useExec } from "@raycast/utils";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   FETCH_SCRIPT,
   killProcess,
@@ -24,7 +26,14 @@ import { DevServer } from "./types";
 interface Preferences {
   showFullPath: boolean;
   refreshInterval: string;
+  terminalApp?: Application;
 }
+
+const DEFAULT_TERMINAL: Application = {
+  name: "Terminal",
+  path: "/System/Applications/Utilities/Terminal.app",
+  bundleId: "com.apple.Terminal",
+};
 
 function formatUptime(startedAt: Date): string {
   const seconds = Math.floor((Date.now() - startedAt.getTime()) / 1000);
@@ -37,7 +46,7 @@ function formatUptime(startedAt: Date): string {
 function toolColor(tool: string): Color {
   const colors: Record<string, Color> = {
     vite: Color.Purple,
-    next: Color.SecondaryText,
+    next: Color.PrimaryText,
     nuxt: Color.Green,
     astro: Color.Purple,
     webpack: Color.Blue,
@@ -49,6 +58,7 @@ function toolColor(tool: string): Color {
     turbo: Color.Blue,
     esbuild: Color.Yellow,
     node: Color.Green,
+    bun: Color.Yellow,
   };
   return colors[tool.toLowerCase()] ?? Color.Blue;
 }
@@ -85,34 +95,37 @@ async function detectFaviconUrl(port: string): Promise<string | undefined> {
 
 interface ServerItemProps {
   server: DevServer;
-  showFullPath: boolean;
+  terminalApp: Application;
   onKill: () => void;
   onKillProject: () => void;
   onKillAll: () => void;
   onRestart: () => void;
+  onRefresh: () => void;
 }
 
 function ServerItem({
   server,
+  terminalApp,
   onKill,
   onKillProject,
   onKillAll,
   onRestart,
+  onRefresh,
 }: ServerItemProps) {
-  const [icon, setIcon] = useState<Image.ImageLike>({
-    source: Icon.Globe,
-    tintColor: toolColor(server.tool),
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    detectFaviconUrl(server.port).then((url) => {
-      if (!cancelled && url) setIcon({ source: url, fallback: Icon.Globe });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [server.port]);
+  // Cache the favicon URL by port. Survives revalidations and command
+  // relaunches, so the icon doesn't flash back to a placeholder every
+  // refresh interval. keepPreviousData keeps the prior URL visible while
+  // a fresh fetch is in flight.
+  const { data: faviconUrl } = useCachedPromise(
+    detectFaviconUrl,
+    [server.port],
+    {
+      keepPreviousData: true,
+    },
+  );
+  const icon: Image.ImageLike = faviconUrl
+    ? { source: faviconUrl, fallback: Icon.Globe }
+    : { source: Icon.Globe, tintColor: toolColor(server.tool) };
 
   return (
     <List.Item
@@ -139,7 +152,7 @@ function ServerItem({
         <ActionPanel>
           <Action.OpenInBrowser url={server.url} title="Open in Browser" />
           <Action
-            title="Kill"
+            title="Kill Server"
             icon={Icon.Stop}
             style={Action.Style.Destructive}
             shortcut={{ modifiers: ["cmd"], key: "d" }}
@@ -153,6 +166,25 @@ function ServerItem({
             shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
             onAction={onRestart}
           />
+          <ActionPanel.Section>
+            <Action.Open
+              title={`Open in ${terminalApp.name}`}
+              icon={Icon.Terminal}
+              target={server.cwd}
+              application={terminalApp}
+              shortcut={{ modifiers: ["cmd"], key: "t" }}
+            />
+            <Action.ShowInFinder
+              path={server.cwd}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+            />
+            <Action
+              title="Refresh"
+              icon={Icon.ArrowClockwise}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
+              onAction={onRefresh}
+            />
+          </ActionPanel.Section>
           <ActionPanel.Section>
             <Action
               title="Kill All for Project"
@@ -319,8 +351,40 @@ export default function Command() {
     }
   }
 
+  const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
+  const [toolFilter, setToolFilter] = useState<string>("all");
+
+  // Manual refresh — useExec's revalidate is silent because keepPreviousData
+  // keeps the list rendered. Show a brief animated toast so the user knows
+  // their ⌘R actually did something.
+  async function refresh() {
+    const toast = await showToast({
+      style: Toast.Style.Animated,
+      title: "Refreshing…",
+    });
+    try {
+      await revalidate();
+      toast.style = Toast.Style.Success;
+      toast.title = "Refreshed";
+    } catch (err) {
+      await showFailureToast(err, { title: "Refresh failed" });
+    }
+  }
+
+  // Unique tools currently visible — drives the dropdown options.
+  const availableTools = useMemo(() => {
+    const seen = new Set<string>();
+    for (const s of servers) seen.add(s.tool);
+    return Array.from(seen).sort();
+  }, [servers]);
+
+  const visible =
+    toolFilter === "all"
+      ? servers
+      : servers.filter((s) => s.tool === toolFilter);
+
   const grouped = Object.entries(
-    servers.reduce(
+    visible.reduce(
       (acc, s) => {
         (acc[s.cwd] ??= []).push(s);
         return acc;
@@ -330,11 +394,45 @@ export default function Command() {
   );
 
   return (
-    <List isLoading={isLoading} searchBarPlaceholder="Filter servers...">
+    <List
+      isLoading={isLoading}
+      searchBarPlaceholder="Filter servers..."
+      searchBarAccessory={
+        availableTools.length > 1 ? (
+          <List.Dropdown
+            tooltip="Filter by tool"
+            value={toolFilter}
+            onChange={setToolFilter}
+          >
+            <List.Dropdown.Item title="All tools" value="all" />
+            <List.Dropdown.Section>
+              {availableTools.map((tool) => (
+                <List.Dropdown.Item key={tool} title={tool} value={tool} />
+              ))}
+            </List.Dropdown.Section>
+          </List.Dropdown>
+        ) : undefined
+      }
+    >
       {servers.length === 0 && !isLoading && (
         <List.EmptyView
           title="No dev servers running"
-          description="Start a dev server and it will appear here."
+          description={`Start a dev server and it will appear here.\nRefreshing every ${prefs.refreshInterval}s.`}
+          actions={
+            <ActionPanel>
+              <Action
+                title="Refresh"
+                icon={Icon.ArrowClockwise}
+                shortcut={{ modifiers: ["cmd"], key: "r" }}
+                onAction={refresh}
+              />
+              <Action
+                title="Open Extension Preferences"
+                icon={Icon.Gear}
+                onAction={openExtensionPreferences}
+              />
+            </ActionPanel>
+          }
         />
       )}
       {grouped.map(([cwd, projectServers]) => (
@@ -347,11 +445,12 @@ export default function Command() {
             <ServerItem
               key={server.pid}
               server={server}
-              showFullPath={prefs.showFullPath}
+              terminalApp={terminalApp}
               onKill={() => kill(server.pid)}
               onKillProject={() => killProject(cwd)}
               onKillAll={killAll}
               onRestart={() => restart(server)}
+              onRefresh={refresh}
             />
           ))}
         </List.Section>

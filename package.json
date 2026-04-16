@@ -20,7 +20,15 @@
       "mode": "view",
       "preferences": [
         {
+          "name": "terminalApp",
+          "title": "Terminal App",
+          "type": "appPicker",
+          "description": "Which terminal to open when using \"Open in Terminal\". Defaults to macOS Terminal if unset.",
+          "required": false
+        },
+        {
           "name": "showFullPath",
+          "title": "Project Display",
           "type": "checkbox",
           "label": "Show full directory path",
           "description": "Show the full path instead of the project name",
