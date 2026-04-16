@@ -121,6 +121,16 @@ function ServerItem({
           text: formatUptime(server.startedAt),
           tooltip: `Started ${server.startedAt.toLocaleString()}`,
         },
+        // Show the runtime tag only when it adds new information.
+        // If the framework tag is already "bun", a second "bun" tag is just noise.
+        ...(server.runtime === "bun" && server.tool !== "bun"
+          ? [
+              {
+                tag: { value: "bun", color: Color.Yellow },
+                tooltip: "Listening process is running on the Bun runtime",
+              },
+            ]
+          : []),
         { tag: { value: server.tool, color: toolColor(server.tool) } },
       ]}
       actions={
@@ -136,7 +146,7 @@ function ServerItem({
           {/* CopyToClipboard already uses Cmd+C by default */}
           <Action.CopyToClipboard title="Copy URL" content={server.url} />
           <Action
-            title="Restart (npm Run Dev)"
+            title="Restart Server"
             icon={Icon.ArrowClockwise}
             shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
             onAction={onRestart}
@@ -219,10 +229,9 @@ export default function Command() {
       shouldRevalidateAfter: false,
     });
     await showToast({
-      style: Toast.Style.Success,
-      title: "Restarted via npm run dev",
-      message:
-        "Won't work for yarn/bun/npm start — check log if it doesn't reappear",
+      style: Toast.Style.Animated,
+      title: "Restarting…",
+      message: server.projectName,
     });
     setTimeout(revalidate, 3000);
   }

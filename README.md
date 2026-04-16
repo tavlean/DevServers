@@ -4,12 +4,13 @@ List and manage your running development servers without leaving Raycast. See al
 
 ## Features
 
-- **Auto-detects** running dev servers (Vite, Next.js, Astro, SvelteKit, Nuxt, Webpack, and more)
+- **Auto-detects** running dev servers (Vite, Next.js, Astro, SvelteKit, Nuxt, Webpack, Bun, and more)
 - **Grouped by project** — servers from the same directory appear under one section
 - **Favicons** — shows each site's actual favicon as the list icon
 - **Uptime tracking** — see how long each server has been running; hover for exact start time
 - **Stays open** — the window never closes after an action, so you can kill multiple servers in one session
 - **Auto-refresh** — list updates automatically on a configurable interval
+- **Smart restart** — picks the right package manager (npm, pnpm, yarn, or bun) from the project's lockfile
 
 ## Keyboard Shortcuts
 
@@ -29,6 +30,4 @@ List and manage your running development servers without leaving Raycast. See al
 
 ## Known Limitations
 
-- **Bun not detected** — servers started with `bun dev` or `bunx` are not currently detected
-- **Restart uses `npm run dev`** — the restart action always runs `npm run dev` in the project directory, which won't work for projects using `yarn`, `bun`, or a custom start command
 - **macOS only**

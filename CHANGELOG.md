@@ -1,5 +1,11 @@
 # Dev Servers Changelog
 
+## [Bun & Package Manager Support] - {PR_MERGE_DATE}
+
+- Detect dev servers launched via `bun` (in addition to `node_modules/.bin/` processes)
+- Restart now picks the right package manager (`npm`, `pnpm`, `yarn`, `bun`) from the project's lockfile instead of always running `npm run dev`
+- Restart spawns the new process directly (no shell concatenation of the project path)
+
 ## [Initial Version] - 2026-04-16
 
 - List running dev servers grouped by project
