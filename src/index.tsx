@@ -43,53 +43,98 @@ function formatUptime(startedAt: Date): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
-function toolColor(tool: string): Color {
+// Theme-adaptive overrides for the few frameworks where the named palette
+// renders too muddy or too low-contrast against Raycast's translucent tag
+// background — especially on selected rows in dark mode. The rest fall
+// through to the named palette which works fine.
+const TOOL_COLOR_OVERRIDES: Record<string, { light: string; dark: string }> = {
+  // Purples — deepened in light mode for readable contrast
+  vite: { light: "#5B21B6", dark: "#B49CFF" },
+  astro: { light: "#5B21B6", dark: "#B49CFF" },
+  gatsby: { light: "#5B21B6", dark: "#B49CFF" },
+  // Yellows — Raycast's Color.Yellow is too pale in light mode; use a deeper
+  // amber there. Keep a warm yellow in dark mode where it reads fine.
+  parcel: { light: "#A16207", dark: "#FDE047" },
+  esbuild: { light: "#A16207", dark: "#FDE047" },
+  bun: { light: "#A16207", dark: "#FDE047" },
+  // Next — Tailwind gray-900 / gray-100 (blue-tinted gray, not neutral)
+  next: { light: "#111827", dark: "#F3F4F6" },
+};
+
+function toolColor(tool: string): Color | { light: string; dark: string } {
+  const key = tool.toLowerCase();
+  if (TOOL_COLOR_OVERRIDES[key]) return TOOL_COLOR_OVERRIDES[key];
   const colors: Record<string, Color> = {
-    vite: Color.Purple,
-    next: Color.PrimaryText,
     nuxt: Color.Green,
-    astro: Color.Purple,
     webpack: Color.Blue,
     svelte: Color.Orange,
     sveltekit: Color.Orange,
     parcel: Color.Yellow,
-    gatsby: Color.Purple,
     remix: Color.Magenta,
     turbo: Color.Blue,
     esbuild: Color.Yellow,
     node: Color.Green,
     bun: Color.Yellow,
   };
-  return colors[tool.toLowerCase()] ?? Color.Blue;
+  return colors[key] ?? Color.Blue;
 }
 
-// Fetches the page HTML and extracts the href from the first <link rel="icon"> tag.
-// Falls back to undefined if the page doesn't respond or has no icon link.
-async function detectFaviconUrl(port: string): Promise<string | undefined> {
+// Fetch with a hard 3s timeout. Returns null on any failure so callers can
+// chain fallbacks cleanly without nested try/catch.
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit & { method?: string } = {},
+): Promise<Response | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3000);
   try {
-    const res = await fetch(`http://localhost:${port}/`, {
-      signal: controller.signal,
-    });
-    const html = await res.text();
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Verify a URL actually serves an image (HEAD 200). Skipping this check
+// would let us cache a 404'd favicon path, causing Raycast to render its
+// untinted grey-globe fallback instead of our nicer tinted placeholder.
+async function urlExists(url: string): Promise<boolean> {
+  const res = await fetchWithTimeout(url, { method: "HEAD" });
+  return !!res && res.ok;
+}
+
+// Resolve the best favicon URL for a localhost dev server. Tries in order:
+//  1. <link rel="icon"> in the page HTML (HEAD-validated)
+//  2. /favicon.ico (the convention every framework starter ships with)
+//  3. undefined → caller renders a framework-tinted globe instead.
+async function detectFaviconUrl(port: string): Promise<string | undefined> {
+  const origin = `http://localhost:${port}`;
+
+  // 1. Page <link rel="icon">
+  const html = await fetchWithTimeout(`${origin}/`).then((r) =>
+    r ? r.text() : null,
+  );
+  if (html) {
     const linkTags = html.match(/<link[^>]+>/gi) ?? [];
     for (const tag of linkTags) {
       if (/rel=["'][^"']*icon[^"']*["']/i.test(tag)) {
         const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
         if (hrefMatch) {
           const href = hrefMatch[1];
-          return href.startsWith("http")
+          const url = href.startsWith("http")
             ? href
-            : `http://localhost:${port}${href.startsWith("/") ? href : `/${href}`}`;
+            : `${origin}${href.startsWith("/") ? href : `/${href}`}`;
+          if (await urlExists(url)) return url;
         }
       }
     }
-  } catch {
-    // Server didn't respond or aborted — fall through to globe
-  } finally {
-    clearTimeout(timeout);
   }
+
+  // 2. /favicon.ico fallback
+  const icoUrl = `${origin}/favicon.ico`;
+  if (await urlExists(icoUrl)) return icoUrl;
+
   return undefined;
 }
 

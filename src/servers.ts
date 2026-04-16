@@ -26,7 +26,12 @@ ps aux | grep -v grep | awk '
   $11 ~ /(\\/|^)bun$/ { print $2 }
 ' | sort -u | while read -r PID; do
   CMD=$(ps -p $PID -o command= 2>/dev/null) || continue
-  PORT=$(echo "$PORTS" | awk -v p=$PID '$1==p {print $2; exit}')
+  # A single dev-server PID often has multiple LISTEN sockets: the main HTTP
+  # server plus ephemeral OS-assigned ports for HMR/IPC/prebundling. We pick
+  # the LOWEST port because configured dev ports (3000, 4321, 5173, 8080)
+  # are always below ephemeral ports (32768-65535). lsof's order is otherwise
+  # non-deterministic and would flicker the displayed port across refreshes.
+  PORT=$(echo "$PORTS" | awk -v p=$PID '$1==p {print $2}' | sort -n | head -1)
   [ -z "$PORT" ] && continue
   CWD=$(lsof -p $PID -a -d cwd 2>/dev/null | awk 'NR>1 {print $NF}')
   STARTED=$(ps -p $PID -o lstart= 2>/dev/null)
