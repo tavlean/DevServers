@@ -45,19 +45,19 @@ function formatUptime(startedAt: Date): string {
 
 // Theme-adaptive overrides for the few frameworks where the named palette
 // renders too muddy or too low-contrast against Raycast's translucent tag
-// background — especially on selected rows in dark mode. The rest fall
+// background, especially on selected rows in dark mode. The rest fall
 // through to the named palette which works fine.
 const TOOL_COLOR_OVERRIDES: Record<string, { light: string; dark: string }> = {
-  // Purples — deepened in light mode for readable contrast
+  // Purples: deepened in light mode for readable contrast
   vite: { light: "#5B21B6", dark: "#B49CFF" },
   astro: { light: "#5B21B6", dark: "#B49CFF" },
   gatsby: { light: "#5B21B6", dark: "#B49CFF" },
-  // Yellows — Raycast's Color.Yellow is too pale in light mode; use a deeper
+  // Yellows: Raycast's Color.Yellow is too pale in light mode, so use a deeper
   // amber there. Keep a warm yellow in dark mode where it reads fine.
   parcel: { light: "#A16207", dark: "#FDE047" },
   esbuild: { light: "#A16207", dark: "#FDE047" },
   bun: { light: "#A16207", dark: "#FDE047" },
-  // Next — Tailwind gray-900 / gray-100 (blue-tinted gray, not neutral)
+  // Next: Tailwind gray-900 / gray-100 (blue-tinted gray, not neutral)
   next: { light: "#111827", dark: "#F3F4F6" },
 };
 
@@ -330,7 +330,7 @@ export default function Command() {
         title: "Kill All",
         style: Alert.ActionStyle.Destructive,
       },
-      // Intentionally NO rememberUserChoice — the nuclear option always confirms.
+      // Intentionally NO rememberUserChoice. The nuclear option always confirms.
     });
     if (!confirmed) return;
     try {
@@ -399,7 +399,7 @@ export default function Command() {
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const [toolFilter, setToolFilter] = useState<string>("all");
 
-  // Manual refresh — useExec's revalidate is silent because keepPreviousData
+  // Manual refresh: useExec's revalidate is silent because keepPreviousData
   // keeps the list rendered. Show a brief animated toast so the user knows
   // their ⌘R actually did something.
   async function refresh() {
@@ -416,7 +416,7 @@ export default function Command() {
     }
   }
 
-  // Unique tools currently visible — drives the dropdown options.
+  // Unique tools currently visible. Drives the dropdown options.
   const availableTools = useMemo(() => {
     const seen = new Set<string>();
     for (const s of servers) seen.add(s.tool);

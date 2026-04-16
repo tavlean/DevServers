@@ -13,7 +13,7 @@ const execAsync = promisify(exec);
 // Uses `while read -r PID` (not `for PID in $PIDS`) to correctly iterate in zsh,
 // where unquoted variable expansion does not word-split on newlines.
 //
-// lstart format: "Wed Apr 16 10:23:45 2026" — V8 parses this correctly via new Date().
+// lstart format: "Wed Apr 16 10:23:45 2026". V8 parses this correctly via new Date().
 //
 // Bun support: the awk filter matches either node_modules/.bin/ in the full
 // command line OR a bare `bun` (or path-suffixed `/bun`) in the executable
@@ -38,7 +38,7 @@ ps aux | grep -v grep | awk '
   TOOL=$(echo "$CMD" | grep -oE 'node_modules/.bin/[^ ]+' | xargs basename 2>/dev/null)
   # Runtime detection: check the actual executable, not the full command line.
   # ps -o comm= returns the process basename (sometimes a full path on macOS).
-  # This identifies "true bun" only — bun delegating to node-via-vite-shebang
+  # This identifies "true bun" only. Bun delegating to node via vite's shebang
   # shows as node here, which is correct since the listening process IS node.
   COMM=$(ps -p $PID -o comm= 2>/dev/null)
   if [[ "$COMM" == "bun" || "$COMM" == */bun ]]; then
@@ -50,7 +50,7 @@ ps aux | grep -v grep | awk '
   if [[ -z "$TOOL" ]] && echo "$CMD" | grep -qE '(/|^)bun( |$)'; then
     TOOL="bun"
   fi
-  # SvelteKit runs under vite — detect it by the presence of svelte.config in the project root
+  # SvelteKit runs under vite, so detect it by the presence of svelte.config in the project root
   if [[ "$TOOL" == "vite" && (-f "$CWD/svelte.config.js" || -f "$CWD/svelte.config.ts") ]]; then
     TOOL="sveltekit"
   fi
@@ -112,7 +112,7 @@ function cwdSlug(cwd: string): string {
 // Implementation notes:
 // - We launch via `/bin/zsh -ilc` so the user's PATH is loaded. `-l` reads
 //   `~/.zprofile`; `-i` reads `~/.zshrc`. Most users put their PATH additions
-//   for nvm/bun/pnpm in `~/.zshrc`, so both flags are required — Raycast's
+//   for nvm/bun/pnpm in `~/.zshrc`, so both flags are required. Raycast's
 //   GUI-app PATH is otherwise too minimal to find these tools.
 // - `cwd` is passed as a spawn option (NOT shell-concatenated) which removes
 //   the prior shell-injection surface in the path.
