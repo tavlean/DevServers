@@ -11,7 +11,12 @@ import {
 } from "@raycast/api";
 import { useExec } from "@raycast/utils";
 import { useEffect, useState } from "react";
-import { FETCH_SCRIPT, killProcess, parseServers, restartServer } from "./servers";
+import {
+  FETCH_SCRIPT,
+  killProcess,
+  parseServers,
+  restartServer,
+} from "./servers";
 import { DevServer } from "./types";
 
 interface Preferences {
@@ -52,7 +57,9 @@ async function detectFaviconUrl(port: string): Promise<string | undefined> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3000);
   try {
-    const res = await fetch(`http://localhost:${port}/`, { signal: controller.signal });
+    const res = await fetch(`http://localhost:${port}/`, {
+      signal: controller.signal,
+    });
     const html = await res.text();
     const linkTags = html.match(/<link[^>]+>/gi) ?? [];
     for (const tag of linkTags) {
@@ -83,7 +90,13 @@ interface ServerItemProps {
   onRestart: () => void;
 }
 
-function ServerItem({ server, onKill, onKillProject, onKillAll, onRestart }: ServerItemProps) {
+function ServerItem({
+  server,
+  onKill,
+  onKillProject,
+  onKillAll,
+  onRestart,
+}: ServerItemProps) {
   const [icon, setIcon] = useState<Image.ImageLike>({
     source: Icon.Globe,
     tintColor: toolColor(server.tool),
@@ -94,7 +107,9 @@ function ServerItem({ server, onKill, onKillProject, onKillAll, onRestart }: Ser
     detectFaviconUrl(server.port).then((url) => {
       if (!cancelled && url) setIcon({ source: url, fallback: Icon.Globe });
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [server.port]);
 
   return (
@@ -121,7 +136,7 @@ function ServerItem({ server, onKill, onKillProject, onKillAll, onRestart }: Ser
           {/* CopyToClipboard already uses Cmd+C by default */}
           <Action.CopyToClipboard title="Copy URL" content={server.url} />
           <Action
-            title="Restart (npm run dev)"
+            title="Restart (npm Run Dev)"
             icon={Icon.ArrowClockwise}
             shortcut={{ modifiers: ["cmd", "shift"], key: "r" }}
             onAction={onRestart}
@@ -151,7 +166,12 @@ function ServerItem({ server, onKill, onKillProject, onKillAll, onRestart }: Ser
 export default function Command() {
   const prefs = getPreferenceValues<Preferences>();
 
-  const { isLoading, data: servers = [], mutate, revalidate } = useExec("/bin/zsh", ["-c", FETCH_SCRIPT], {
+  const {
+    isLoading,
+    data: servers = [],
+    mutate,
+    revalidate,
+  } = useExec("/bin/zsh", ["-c", FETCH_SCRIPT], {
     parseOutput: ({ stdout }) => parseServers(stdout),
     keepPreviousData: true,
   });
@@ -163,7 +183,8 @@ export default function Command() {
 
   async function kill(pid: number) {
     await mutate(killProcess(pid), {
-      optimisticUpdate: (current) => (current ?? []).filter((s) => s.pid !== pid),
+      optimisticUpdate: (current) =>
+        (current ?? []).filter((s) => s.pid !== pid),
       rollbackOnError: true,
     });
   }
@@ -173,9 +194,10 @@ export default function Command() {
     await mutate(
       Promise.all(targets.map((s) => killProcess(s.pid))).then(() => {}),
       {
-        optimisticUpdate: (current) => (current ?? []).filter((s) => s.cwd !== cwd),
+        optimisticUpdate: (current) =>
+          (current ?? []).filter((s) => s.cwd !== cwd),
         rollbackOnError: true,
-      }
+      },
     );
   }
 
@@ -185,20 +207,22 @@ export default function Command() {
       {
         optimisticUpdate: () => [],
         rollbackOnError: true,
-      }
+      },
     );
   }
 
   async function restart(server: DevServer) {
     await mutate(restartServer(server), {
-      optimisticUpdate: (current) => (current ?? []).filter((s) => s.pid !== server.pid),
+      optimisticUpdate: (current) =>
+        (current ?? []).filter((s) => s.pid !== server.pid),
       rollbackOnError: false,
       shouldRevalidateAfter: false,
     });
     await showToast({
       style: Toast.Style.Success,
       title: "Restarted via npm run dev",
-      message: "Won't work for yarn/bun/npm start — check log if it doesn't reappear",
+      message:
+        "Won't work for yarn/bun/npm start — check log if it doesn't reappear",
     });
     setTimeout(revalidate, 3000);
   }
@@ -209,8 +233,8 @@ export default function Command() {
         (acc[s.cwd] ??= []).push(s);
         return acc;
       },
-      {} as Record<string, DevServer[]>
-    )
+      {} as Record<string, DevServer[]>,
+    ),
   );
 
   return (

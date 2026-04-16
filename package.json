@@ -16,7 +16,7 @@
     {
       "name": "index",
       "title": "Dev Servers",
-      "description": "List running dev servers",
+      "description": "List and manage running dev servers",
       "mode": "view",
       "preferences": [
         {

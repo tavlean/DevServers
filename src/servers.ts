@@ -57,6 +57,6 @@ export async function killProcess(pid: number): Promise<void> {
 export async function restartServer(server: DevServer): Promise<void> {
   await execAsync(`kill ${server.pid}`);
   await execAsync(
-    `cd "${server.cwd}" && nohup npm run dev > /tmp/dev-servers-restart-${server.pid}.log 2>&1 &`
+    `cd "${server.cwd}" && nohup npm run dev > /tmp/dev-servers-restart-${server.pid}.log 2>&1 &`,
   );
 }
