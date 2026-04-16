@@ -1,16 +1,18 @@
 import {
   Action,
   ActionPanel,
+  Alert,
   Color,
   Icon,
   Image,
   List,
   Toast,
+  confirmAlert,
   getPreferenceValues,
   showToast,
 } from "@raycast/api";
-import { useExec } from "@raycast/utils";
-import { useEffect, useState } from "react";
+import { showFailureToast, useExec } from "@raycast/utils";
+import { useEffect, useRef, useState } from "react";
 import {
   FETCH_SCRIPT,
   killProcess,
@@ -191,49 +193,130 @@ export default function Command() {
     return () => clearInterval(id);
   }, [prefs.refreshInterval, revalidate]);
 
+  // Mirror `servers` into a ref so async handlers (like restart's polling
+  // loop) can read the latest value without going stale on closure capture.
+  const serversRef = useRef(servers);
+  useEffect(() => {
+    serversRef.current = servers;
+  }, [servers]);
+
   async function kill(pid: number) {
-    await mutate(killProcess(pid), {
-      optimisticUpdate: (current) =>
-        (current ?? []).filter((s) => s.pid !== pid),
-      rollbackOnError: true,
-    });
+    try {
+      await mutate(killProcess(pid), {
+        optimisticUpdate: (current) =>
+          (current ?? []).filter((s) => s.pid !== pid),
+        rollbackOnError: true,
+      });
+    } catch (err) {
+      await showFailureToast(err, { title: "Failed to kill server" });
+    }
   }
 
   async function killProject(cwd: string) {
     const targets = servers.filter((s) => s.cwd === cwd);
-    await mutate(
-      Promise.all(targets.map((s) => killProcess(s.pid))).then(() => {}),
-      {
-        optimisticUpdate: (current) =>
-          (current ?? []).filter((s) => s.cwd !== cwd),
-        rollbackOnError: true,
+    if (targets.length === 0) return;
+    const projectName = targets[0].projectName;
+    const confirmed = await confirmAlert({
+      title: `Kill all servers for ${projectName}?`,
+      message: `This will stop ${targets.length} server${targets.length > 1 ? "s" : ""}.`,
+      primaryAction: {
+        title: "Kill",
+        style: Alert.ActionStyle.Destructive,
       },
-    );
+      rememberUserChoice: true,
+    });
+    if (!confirmed) return;
+    try {
+      await mutate(
+        (async () => {
+          await Promise.all(targets.map((s) => killProcess(s.pid)));
+        })(),
+        {
+          optimisticUpdate: (current) =>
+            (current ?? []).filter((s) => s.cwd !== cwd),
+          rollbackOnError: true,
+        },
+      );
+    } catch (err) {
+      await showFailureToast(err, {
+        title: `Failed to kill servers for ${projectName}`,
+      });
+    }
   }
 
   async function killAll() {
-    await mutate(
-      Promise.all(servers.map((s) => killProcess(s.pid))).then(() => {}),
-      {
-        optimisticUpdate: () => [],
-        rollbackOnError: true,
+    if (servers.length === 0) return;
+    const confirmed = await confirmAlert({
+      title: "Kill all dev servers?",
+      message: `This will stop all ${servers.length} running server${servers.length > 1 ? "s" : ""} across every project.`,
+      primaryAction: {
+        title: "Kill All",
+        style: Alert.ActionStyle.Destructive,
       },
-    );
+      // Intentionally NO rememberUserChoice — the nuclear option always confirms.
+    });
+    if (!confirmed) return;
+    try {
+      await mutate(
+        (async () => {
+          await Promise.all(servers.map((s) => killProcess(s.pid)));
+        })(),
+        {
+          optimisticUpdate: () => [],
+          rollbackOnError: true,
+        },
+      );
+    } catch (err) {
+      await showFailureToast(err, { title: "Failed to kill all servers" });
+    }
   }
 
   async function restart(server: DevServer) {
-    await mutate(restartServer(server), {
-      optimisticUpdate: (current) =>
-        (current ?? []).filter((s) => s.pid !== server.pid),
-      rollbackOnError: false,
-      shouldRevalidateAfter: false,
-    });
-    await showToast({
-      style: Toast.Style.Animated,
-      title: "Restarting…",
-      message: server.projectName,
-    });
-    setTimeout(revalidate, 3000);
+    // Snapshot the project's server count BEFORE killing the old one so we
+    // can detect when a new server has bound a port. We use serversRef.current
+    // so we always see the latest state across the polling loop.
+    const baseline = serversRef.current.filter(
+      (s) => s.cwd === server.cwd && s.pid !== server.pid,
+    ).length;
+    try {
+      await mutate(restartServer(server), {
+        optimisticUpdate: (current) =>
+          (current ?? []).filter((s) => s.pid !== server.pid),
+        rollbackOnError: false,
+      });
+      const toast = await showToast({
+        style: Toast.Style.Animated,
+        title: "Restarting…",
+        message: server.projectName,
+      });
+      // Poll at staggered intervals up to ~10s. Bail early as soon as the
+      // server count for this project rises above baseline (new port bound).
+      const delays = [1000, 2000, 3000, 4000];
+      let restored = false;
+      for (const delay of delays) {
+        await new Promise((r) => setTimeout(r, delay));
+        await revalidate();
+        const current = serversRef.current.filter(
+          (s) => s.cwd === server.cwd,
+        ).length;
+        if (current > baseline) {
+          restored = true;
+          break;
+        }
+      }
+      if (restored) {
+        toast.style = Toast.Style.Success;
+        toast.title = "Restarted";
+      } else {
+        toast.style = Toast.Style.Failure;
+        toast.title = "Restart timed out";
+        toast.message = "Check /tmp/dev-servers-restart-*.log";
+      }
+    } catch (err) {
+      await showFailureToast(err, {
+        title: `Failed to restart ${server.projectName}`,
+      });
+    }
   }
 
   const grouped = Object.entries(

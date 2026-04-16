@@ -105,9 +105,10 @@ function cwdSlug(cwd: string): string {
 // Restart a dev server using the project's detected package manager.
 //
 // Implementation notes:
-// - We launch via `/bin/zsh -l -c` so the user's PATH is loaded (`bun`, `pnpm`,
-//   etc. typically live in user-specific directories that aren't in Raycast's
-//   default PATH).
+// - We launch via `/bin/zsh -ilc` so the user's PATH is loaded. `-l` reads
+//   `~/.zprofile`; `-i` reads `~/.zshrc`. Most users put their PATH additions
+//   for nvm/bun/pnpm in `~/.zshrc`, so both flags are required — Raycast's
+//   GUI-app PATH is otherwise too minimal to find these tools.
 // - `cwd` is passed as a spawn option (NOT shell-concatenated) which removes
 //   the prior shell-injection surface in the path.
 // - `detached: true` + `unref()` lets the spawned process outlive the extension
@@ -120,14 +121,10 @@ export async function restartServer(server: DevServer): Promise<void> {
   const [cmd, args] = PM_COMMAND[pm];
   const logPath = `/tmp/dev-servers-restart-${cwdSlug(server.cwd)}.log`;
   const out = fs.openSync(logPath, "a");
-  const child = spawn(
-    "/bin/zsh",
-    ["-l", "-c", `exec ${cmd} ${args.join(" ")}`],
-    {
-      cwd: server.cwd,
-      detached: true,
-      stdio: ["ignore", out, out],
-    },
-  );
+  const child = spawn("/bin/zsh", ["-ilc", `exec ${cmd} ${args.join(" ")}`], {
+    cwd: server.cwd,
+    detached: true,
+    stdio: ["ignore", out, out],
+  });
   child.unref();
 }
