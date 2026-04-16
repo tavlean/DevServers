@@ -449,7 +449,7 @@ export default function Command() {
             value={toolFilter}
             onChange={setToolFilter}
           >
-            <List.Dropdown.Item title="All tools" value="all" />
+            <List.Dropdown.Item title="All Tools" value="all" />
             <List.Dropdown.Section>
               {availableTools.map((tool) => (
                 <List.Dropdown.Item key={tool} title={tool} value={tool} />
@@ -461,7 +461,7 @@ export default function Command() {
     >
       {servers.length === 0 && !isLoading && (
         <List.EmptyView
-          title="No dev servers running"
+          title="No Dev Servers Running"
           description={`Start a dev server and it will appear here.\nRefreshing every ${prefs.refreshInterval}s.`}
           actions={
             <ActionPanel>
