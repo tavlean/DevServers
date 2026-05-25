@@ -35,7 +35,10 @@ ps aux | grep -v grep | awk '
   # non-deterministic and would flicker the displayed port across refreshes.
   PORT=$(echo "$PORTS" | awk -v p=$PID '$1==p {print $2}' | sort -n | head -1)
   [ -z "$PORT" ] && continue
-  CWD=$(lsof -p $PID -a -d cwd 2>/dev/null | awk 'NR>1 {print $NF}')
+  # -F n emits machine-readable output (one field per line, prefixed by a
+  # type letter); 'n<path>' lines contain the full cwd including spaces.
+  # The column-formatted form would split on whitespace and truncate.
+  CWD=$(lsof -p $PID -a -d cwd -F n 2>/dev/null | awk '/^n/ {print substr($0,2)}')
   STARTED=$(ps -p $PID -o lstart= 2>/dev/null)
   # Prefer the .bin/ name when present, otherwise fall back to the package
   # name from node_modules/<pkg>/ — handles \`node node_modules/serve/build/main.js\`.
