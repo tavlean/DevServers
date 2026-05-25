@@ -6,8 +6,8 @@ import { DevServer } from "./types";
 const execAsync = promisify(exec);
 
 // Grabs all listening ports once up front to avoid repeated lsof calls,
-// then iterates over candidate dev-server PIDs (anything launched via
-// node_modules/.bin/, plus bun processes) and emits one pipe-delimited
+// then iterates over candidate dev-server PIDs (anything running a script
+// from node_modules/, plus bun processes) and emits one pipe-delimited
 // line per server: PID|PORT|CWD|STARTED|TOOL
 //
 // Uses `while read -r PID` (not `for PID in $PIDS`) to correctly iterate in zsh,
@@ -15,14 +15,16 @@ const execAsync = promisify(exec);
 //
 // lstart format: "Wed Apr 16 10:23:45 2026". V8 parses this correctly via new Date().
 //
-// Bun support: the awk filter matches either node_modules/.bin/ in the full
-// command line OR a bare `bun` (or path-suffixed `/bun`) in the executable
-// column ($11). The `[ -z "$PORT" ] && continue` then drops any bun process
-// not actually listening, so we never surface random `bun some-script.ts` runs.
+// The awk filter matches node_modules/ anywhere in the command line OR a
+// bare `bun` in the executable column ($11). The broader node_modules/
+// match (vs. the narrower .bin/) catches tools invoked as
+// `node node_modules/<pkg>/...` — e.g. `serve`, `http-server`. Over-
+// collection is harmless: the `[ -z "$PORT" ] && continue` below drops
+// any PID not actually listening on TCP.
 export const FETCH_SCRIPT = `
 PORTS=$(lsof -iTCP -sTCP:LISTEN -nP 2>/dev/null | awk 'NR>1 {n=split($9,a,":"); print $2, a[n]}')
 ps aux | grep -v grep | awk '
-  /node_modules\\/\\.bin\\// { print $2; next }
+  /node_modules\\// { print $2; next }
   $11 ~ /(\\/|^)bun$/ { print $2 }
 ' | sort -u | while read -r PID; do
   CMD=$(ps -p $PID -o command= 2>/dev/null) || continue
@@ -35,7 +37,12 @@ ps aux | grep -v grep | awk '
   [ -z "$PORT" ] && continue
   CWD=$(lsof -p $PID -a -d cwd 2>/dev/null | awk 'NR>1 {print $NF}')
   STARTED=$(ps -p $PID -o lstart= 2>/dev/null)
-  TOOL=$(echo "$CMD" | grep -oE 'node_modules/.bin/[^ ]+' | xargs basename 2>/dev/null)
+  # Prefer the .bin/ name when present, otherwise fall back to the package
+  # name from node_modules/<pkg>/ — handles \`node node_modules/serve/build/main.js\`.
+  TOOL=$(echo "$CMD" | grep -oE 'node_modules/\\.bin/[^ ]+' | xargs basename 2>/dev/null)
+  if [[ -z "$TOOL" ]]; then
+    TOOL=$(echo "$CMD" | grep -oE 'node_modules/(@[^/]+/)?[^/ ]+' | head -1 | sed 's|node_modules/||')
+  fi
   # Runtime detection: check the actual executable, not the full command line.
   # ps -o comm= returns the process basename (sometimes a full path on macOS).
   # This identifies "true bun" only. Bun delegating to node via vite's shebang
