@@ -1,10 +1,10 @@
 # Dev Servers Changelog
 
-## [Custom domain detection] - 2026-05-26
+## [Portless & Shortcuts] - 2026-05-26
 
 Surfaces custom local domains from [portless](https://github.com/vercel-labs/portless), and tightens the action panel, shortcuts, and preferences to align with Raycast conventions.
 
-**Custom domain detection**
+### Custom domain detection
 
 - Detect custom local domains via portless and show the named URL (e.g. `myapp.localhost`) as the row title instead of `localhost:PORT`. The `localhost:PORT` pill stays visible alongside it, since the raw loopback target is still useful for env files, OAuth allowlists, CORS rules, and anything that doesn't trust the local CA.
 - "Open in Browser" and "Copy URL" target the custom domain when one is present. New "Open Localhost URL" and "Copy Localhost URL" actions target loopback explicitly.
@@ -12,13 +12,13 @@ Surfaces custom local domains from [portless](https://github.com/vercel-labs/por
 - New "Show localhost URL with custom domain" preference, for users who'd rather hide the `localhost:PORT` pill once a named domain is in place.
 - Filter out the portless proxy daemon itself so it never appears as a phantom dev server row.
 
-**Action panel and shortcuts**
+### Action panel and shortcuts
 
 - Kill Server's shortcut moves from `⌘D` to `⌃X`. `⌘D` is officially "Duplicate" in Raycast's keyboard conventions; `⌃X` is "Remove". Kill All for Project and Kill All Servers shift to `⌃⇧X` and `⌃⌥X` to stay in the same family.
 - Copy Localhost URL is bound to `⌘⇧C`, mirroring `⌘C` for Copy URL.
 - Action panel reordered: Restart Server now sits at position 3, above Kill Server. Restarting is the more common mutation (iterate-on-change), and placing it above Kill also means Raycast's reserved `⌘↵` second-action shortcut never auto-fires Kill — it falls through to Open Localhost URL when a custom domain is present, or to Restart otherwise. Both are safe.
 
-**Preferences**
+### Preferences
 
 - Refresh Interval (a behavior setting) moves above Project Display (cosmetic), so settings that change what the extension *does* appear before settings that change how it *looks*.
 
@@ -50,7 +50,7 @@ Dashboard for every running dev server, grouped by project.
 - Auto-detects servers from any framework that uses `node_modules/` (Vite, Next.js, Astro, SvelteKit, Nuxt, Webpack, Parcel, Gatsby, Remix, Turbo, esbuild) plus the Bun runtime.
 - Servers are grouped by project with favicons, uptime, framework, and runtime tags.
   
-Actions:
+### Actions:
 - Open in browser
 - Copy URL
 - Kill
