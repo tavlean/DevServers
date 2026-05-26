@@ -32,6 +32,33 @@ function formatUptime(startedAt: Date): string {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
+// Display label for the tool tag. We keep the internal `tool` field lowercase
+// (used for grouping, color lookup, dropdown filter values) and only stylize
+// on the way to the UI. Anything not in this map renders as-is.
+const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  vite: "Vite",
+  sveltekit: "SvelteKit",
+  svelte: "Svelte",
+  astro: "Astro",
+  next: "Next.js",
+  nuxt: "Nuxt",
+  webpack: "Webpack",
+  parcel: "Parcel",
+  gatsby: "Gatsby",
+  remix: "Remix",
+  turbo: "Turbo",
+  esbuild: "esbuild", // intentionally lowercase per upstream brand
+  bun: "Bun",
+  node: "Node",
+  serve: "Serve",
+  "http-server": "http-server", // intentionally lowercase per package name
+  "live-server": "Live Server",
+};
+
+function toolLabel(tool: string): string {
+  return TOOL_DISPLAY_NAMES[tool.toLowerCase()] ?? tool;
+}
+
 // Theme-adaptive overrides for the few frameworks where the named palette
 // renders too muddy or too low-contrast against Raycast's translucent tag
 // background, especially on selected rows in dark mode. The rest fall
@@ -134,9 +161,16 @@ async function detectFaviconUrl(port: string): Promise<string | undefined> {
   return fetchFaviconDataUri(`${origin}/favicon.ico`);
 }
 
+interface RowVisibility {
+  branch: boolean;
+  uptime: boolean;
+  tool: boolean;
+}
+
 interface ServerItemProps {
   server: DevServer;
   terminalApp: Application;
+  show: RowVisibility;
   onKill: () => void;
   onKillProject: () => void;
   onKillAll: () => void;
@@ -147,6 +181,7 @@ interface ServerItemProps {
 function ServerItem({
   server,
   terminalApp,
+  show,
   onKill,
   onKillProject,
   onKillAll,
@@ -168,40 +203,51 @@ function ServerItem({
     ? { source: faviconUrl, fallback: Icon.Globe }
     : { source: Icon.Globe, tintColor: toolColor(server.tool) };
 
+  // Branch goes in the left-rail subtitle (right next to the title), not in
+  // the accessories on the right. Raycast dims subtitles automatically.
+  const subtitle =
+    show.branch && server.branch
+      ? {
+          value: server.branch,
+          tooltip: `Branch: ${server.branch}\nWorktree: ${server.cwd}`,
+        }
+      : undefined;
+
   return (
     <List.Item
       icon={icon}
       title={`localhost:${server.port}`}
+      subtitle={subtitle}
       accessories={[
-        {
-          text: formatUptime(server.startedAt),
-          tooltip: `Started ${server.startedAt.toLocaleString()}`,
-        },
-        // Show the branch when this row's cwd is a git worktree. Useful on
-        // its own (you can tell which branch a long-running server is on)
-        // and essential when sibling worktrees collapse into one section.
-        ...(server.branch
+        ...(show.uptime
           ? [
               {
-                tag: {
-                  value: server.branch,
-                  color: Color.SecondaryText,
-                },
-                tooltip: `Branch: ${server.branch}\nWorktree: ${server.cwd}`,
+                text: formatUptime(server.startedAt),
+                tooltip: `Started ${server.startedAt.toLocaleString()}`,
               },
             ]
           : []),
-        // Show the runtime tag only when it adds new information.
-        // If the framework tag is already "bun", a second "bun" tag is just noise.
-        ...(server.runtime === "bun" && server.tool !== "bun"
+        // Runtime tag is suppressed when it duplicates the tool tag (e.g.
+        // tool is already "bun"), and rendered only when the user has the
+        // tool tag visible — otherwise standalone "bun" would look orphaned.
+        ...(show.tool && server.runtime === "bun" && server.tool !== "bun"
           ? [
               {
-                tag: { value: "bun", color: Color.Yellow },
+                tag: { value: "Bun", color: Color.Yellow },
                 tooltip: "Listening process is running on the Bun runtime",
               },
             ]
           : []),
-        { tag: { value: server.tool, color: toolColor(server.tool) } },
+        ...(show.tool
+          ? [
+              {
+                tag: {
+                  value: toolLabel(server.tool),
+                  color: toolColor(server.tool),
+                },
+              },
+            ]
+          : []),
       ]}
       actions={
         <ActionPanel>
@@ -408,6 +454,14 @@ export default function Command() {
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const [toolFilter, setToolFilter] = useState<string>("all");
 
+  // Visibility prefs default to true so first-time users see everything.
+  // Raycast returns `undefined` for an unset checkbox on first launch.
+  const show: RowVisibility = {
+    branch: prefs.showBranch ?? true,
+    uptime: prefs.showUptime ?? true,
+    tool: prefs.showTool ?? true,
+  };
+
   // Manual refresh: useExec's revalidate is silent because keepPreviousData
   // keeps the list rendered. Show a brief animated toast so the user knows
   // their ⌘R actually did something.
@@ -464,7 +518,11 @@ export default function Command() {
             <List.Dropdown.Item title="All Tools" value="all" />
             <List.Dropdown.Section>
               {availableTools.map((tool) => (
-                <List.Dropdown.Item key={tool} title={tool} value={tool} />
+                <List.Dropdown.Item
+                  key={tool}
+                  title={toolLabel(tool)}
+                  value={tool}
+                />
               ))}
             </List.Dropdown.Section>
           </List.Dropdown>
@@ -510,6 +568,7 @@ export default function Command() {
               key={server.pid}
               server={server}
               terminalApp={terminalApp}
+              show={show}
               onKill={() => kill(server.pid)}
               onKillProject={() => killProject(projectKey)}
               onKillAll={killAll}

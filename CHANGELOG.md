@@ -2,15 +2,17 @@
 
 ## [Worktree grouping and detection rewrite] - {PR_MERGE_DATE}
 
-Now supports git worktrees & displays branch name. 3x faster & more ready for windows port.
+3x faster, windows port preparation, support for git branches & worktrees.
 
-- Group multiple git worktrees of the same repo into one project section. Each row shows its current branch as a tag, and per-row actions (Open in Terminal, Show in Finder) still target the specific worktree on disk.
-- Show the current git branch as a tag on every project's rows, so you can tell at a glance which branch a long-running dev server is on — useful even for single-worktree projects.
-- Rewrote process detection from an embedded shell pipeline to TypeScript. Output is unchanged; the new path is roughly 3× faster and removes a class of shell-parsing bugs while laying the groundwork for a future Windows port.
+- Rewrote process detection from an embedded shell pipeline to TypeScript. Output is unchanged; the new path is roughly 3x faster, removes a class of shell-parsing bugs, and lays the groundwork for a future Windows port.
+- Group multiple git worktrees of the same repo into one project section. Each row shows its current branch next to the link, and per-row actions (Open in Terminal, Show in Finder) still target the specific worktree on disk.
+- Show the current git branch on every project's rows, so you can tell at a glance which branch a long-running dev server is on, even for single-worktree projects.
+- New preferences to toggle each row accessory (uptime, git branch, framework tag) independently.
+- Stylized framework names (SvelteKit, Astro, Next.js, esbuild, etc.) in the row tag and the filter dropdown.
 
 ## [Detection and favicon improvements] - 2026-05-25
 
-_Detects more dev-server styles, renders favicons reliably across frameworks, and handles project paths that contain spaces._
+Detects more dev-server tools, renders favicons reliably across frameworks, and handles project paths that contain spaces.
 
 - Detect any Node tool that runs out of `node_modules/`, not just those launched via `node_modules/.bin/`. Surfaces tools like `serve` and `http-server` that were previously missed.
 - Render favicons inline so they display reliably for every framework, including SVG icons and dev servers (such as Astro) that don't expose static assets cross-origin.
@@ -18,8 +20,22 @@ _Detects more dev-server styles, renders favicons reliably across frameworks, an
 
 ## [Initial Version] - 2026-05-19
 
-_Keyboard-first dashboard for every running dev server, grouped by project with one-keystroke kill, restart, and open actions._
+Dashboard for every running dev server, grouped by project.
 
-A keyboard-first dashboard for every dev server you have running. Auto-detects servers from any framework that uses `node_modules/.bin/` (Vite, Next.js, Astro, SvelteKit, Nuxt, Webpack, Parcel, Gatsby, Remix, Turbo, esbuild) plus the Bun runtime. Servers are grouped by project with favicons, uptime, framework, and runtime tags.
-
-Actions: open in browser, copy URL, kill, restart, open in terminal, show in Finder, manual refresh, kill all in a project, and kill all globally. Bulk-kill actions ask for confirmation. Restart picks the right package manager from the project's lockfile (npm, pnpm, yarn, bun) and polls until the new server binds a port. Failures surface as toast notifications with a link to the log.
+- A keyboard-first dashboard for every dev server you have running.
+- Auto-detects servers from any framework that uses `node_modules/` (Vite, Next.js, Astro, SvelteKit, Nuxt, Webpack, Parcel, Gatsby, Remix, Turbo, esbuild) plus the Bun runtime.
+- Servers are grouped by project with favicons, uptime, framework, and runtime tags.
+  
+Actions:
+- Open in browser
+- Copy URL
+- Kill
+- Restart
+- Open in terminal
+- Show in Finder
+- Manual refresh
+- Kill all in a project
+- Kill all globally. 
+- Bulk-kill actions ask for confirmation.
+- Restart picks the right package manager from the project's lockfile (npm, pnpm, yarn, bun) and polls until the new server binds a port.
+- Failures surface as toast notifications with a link to the log.

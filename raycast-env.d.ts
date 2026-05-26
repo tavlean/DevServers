@@ -20,7 +20,13 @@ declare namespace Preferences {
   /** Project Display - Show the full path instead of the project name */
   "showFullPath": boolean,
   /** Refresh Interval - How often to refresh the server list */
-  "refreshInterval": "2" | "5" | "10" | "30"
+  "refreshInterval": "2" | "5" | "10" | "30",
+  /** Row Accessories - Show how long each server has been running */
+  "showUptime": boolean,
+  /** undefined - Show the current git branch next to each server when the project is a git repo */
+  "showBranch": boolean,
+  /** undefined - Show the framework / tool tag (Vite, SvelteKit, Astro, etc.) on each row */
+  "showTool": boolean
 }
 }
 
