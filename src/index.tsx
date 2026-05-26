@@ -13,14 +13,9 @@ import {
   openExtensionPreferences,
   showToast,
 } from "@raycast/api";
-import { showFailureToast, useCachedPromise, useExec } from "@raycast/utils";
+import { showFailureToast, useCachedPromise } from "@raycast/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  FETCH_SCRIPT,
-  killProcess,
-  parseServers,
-  restartServer,
-} from "./servers";
+import { fetchServers, killProcess, restartServer } from "./servers";
 import { DevServer } from "./types";
 
 const DEFAULT_TERMINAL: Application = {
@@ -261,8 +256,7 @@ export default function Command() {
     data: servers = [],
     mutate,
     revalidate,
-  } = useExec("/bin/zsh", ["-c", FETCH_SCRIPT], {
-    parseOutput: ({ stdout }) => parseServers(stdout),
+  } = useCachedPromise(fetchServers, [], {
     keepPreviousData: true,
   });
 
