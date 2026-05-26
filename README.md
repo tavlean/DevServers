@@ -6,6 +6,7 @@ A keyboard-first dashboard for every dev server you have running. See them group
 
 - **Auto-detects** running dev servers including Vite, Next.js, Astro, SvelteKit, Nuxt, Webpack, Parcel, Gatsby, Remix, Turbo, esbuild, serve, http-server, anything that runs out of `node_modules/`, plus servers running on the Bun runtime
 - **Grouped by project** so servers from the same directory appear under one section
+- **Worktree-aware** so multiple git worktrees of the same repo collapse into one section, with a per-row branch tag to tell them apart — also surfaces the current branch on single-worktree projects so you can tell which branch a long-running server is on
 - **Favicons** — PNG, ICO, or SVG — are pulled from each site (with `/favicon.ico` fallback), inlined so they render even when the dev server isn't CORS-friendly, and cached across refreshes
 - **Runtime tag** shows a yellow `bun` badge when the listening process is genuinely running on Bun
 - **Uptime tracking** shows how long each server has been running. Hover for the exact start time

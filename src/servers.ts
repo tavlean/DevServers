@@ -129,6 +129,38 @@ async function listCwds(pids: number[]): Promise<Map<number, string>> {
   return out;
 }
 
+interface GitInfo {
+  // Absolute path to the shared .git directory. Same value for every
+  // worktree of the same repo, so it's a stable grouping key.
+  commonDir: string;
+  // Branch name, or empty for detached HEAD / non-git.
+  branch: string;
+}
+
+// Resolve git common-dir and branch for a cwd. Returns undefined when cwd
+// isn't inside a git working tree. One process spawn per call.
+async function getGitInfo(cwd: string): Promise<GitInfo | undefined> {
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "-C",
+      cwd,
+      "rev-parse",
+      "--git-common-dir",
+      "--abbrev-ref",
+      "HEAD",
+    ]);
+    const [commonDirRaw, branchRaw] = stdout.trim().split("\n");
+    if (!commonDirRaw) return undefined;
+    const commonDir = path.isAbsolute(commonDirRaw)
+      ? commonDirRaw
+      : path.resolve(cwd, commonDirRaw);
+    const branch = branchRaw === "HEAD" ? "" : (branchRaw ?? "");
+    return { commonDir, branch };
+  } catch {
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Pure aggregation (cross-platform)
 // ---------------------------------------------------------------------------
@@ -206,12 +238,29 @@ export async function fetchServers(): Promise<DevServer[]> {
     .filter((pid) => portByPid.has(pid));
   const cwdByPid = await listCwds(finalPids);
 
+  // Look up git info per unique cwd, in parallel. Worktrees of the same repo
+  // share a git common-dir, so we use that (well, its parent's basename) as
+  // the project key — collapses sibling worktrees into one group while still
+  // letting us show the branch on each row.
+  const uniqueCwds = [...new Set([...cwdByPid.values()])];
+  const gitByCwd = new Map<string, GitInfo | undefined>();
+  await Promise.all(
+    uniqueCwds.map(async (cwd) => gitByCwd.set(cwd, await getGitInfo(cwd))),
+  );
+
   const servers: DevServer[] = [];
   for (const proc of candidates) {
     const port = portByPid.get(proc.pid);
     if (port === undefined) continue;
     const cwd = cwdByPid.get(proc.pid);
     if (!cwd) continue; // shouldn't happen for live processes, but be safe
+    const git = gitByCwd.get(cwd);
+    // For git projects: project name & key come from the directory holding
+    // the shared .git dir. For non-git: fall back to the worktree basename.
+    const projectName = git
+      ? path.basename(path.dirname(git.commonDir))
+      : path.basename(cwd) || cwd;
+    const projectKey = git ? git.commonDir : cwd;
     servers.push({
       pid: proc.pid,
       port: String(port),
@@ -219,7 +268,9 @@ export async function fetchServers(): Promise<DevServer[]> {
       tool: detectTool(proc.command, cwd),
       runtime: detectRuntime(proc.command),
       cwd,
-      projectName: path.basename(cwd) || cwd,
+      projectKey,
+      projectName,
+      branch: git?.branch || undefined,
       startedAt: new Date(proc.lstart),
     });
   }

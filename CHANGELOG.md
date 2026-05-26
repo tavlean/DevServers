@@ -1,5 +1,11 @@
 # Dev Servers Changelog
 
+## [Worktree grouping and detection rewrite] - 2026-05-26
+
+- Group multiple git worktrees of the same repo into one project section. Each row shows its current branch as a tag, and per-row actions (Open in Terminal, Show in Finder) still target the specific worktree on disk.
+- Show the current git branch as a tag on every project's rows, so you can tell at a glance which branch a long-running dev server is on — useful even for single-worktree projects.
+- Rewrote process detection from an embedded shell pipeline to TypeScript. Output is unchanged; the new path is roughly 3× faster and removes a class of shell-parsing bugs while laying the groundwork for a future Windows port.
+
 ## [Detection and favicon improvements] - 2026-05-25
 
 - Detect any Node tool that runs out of `node_modules/`, not just those launched via `node_modules/.bin/`. Surfaces tools like `serve` and `http-server` that were previously missed.

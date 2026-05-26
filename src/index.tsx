@@ -177,6 +177,20 @@ function ServerItem({
           text: formatUptime(server.startedAt),
           tooltip: `Started ${server.startedAt.toLocaleString()}`,
         },
+        // Show the branch when this row's cwd is a git worktree. Useful on
+        // its own (you can tell which branch a long-running server is on)
+        // and essential when sibling worktrees collapse into one section.
+        ...(server.branch
+          ? [
+              {
+                tag: {
+                  value: server.branch,
+                  color: Color.SecondaryText,
+                },
+                tooltip: `Branch: ${server.branch}\nWorktree: ${server.cwd}`,
+              },
+            ]
+          : []),
         // Show the runtime tag only when it adds new information.
         // If the framework tag is already "bun", a second "bun" tag is just noise.
         ...(server.runtime === "bun" && server.tool !== "bun"
@@ -284,8 +298,8 @@ export default function Command() {
     }
   }
 
-  async function killProject(cwd: string) {
-    const targets = servers.filter((s) => s.cwd === cwd);
+  async function killProject(projectKey: string) {
+    const targets = servers.filter((s) => s.projectKey === projectKey);
     if (targets.length === 0) return;
     const projectName = targets[0].projectName;
     const confirmed = await confirmAlert({
@@ -305,7 +319,7 @@ export default function Command() {
         })(),
         {
           optimisticUpdate: (current) =>
-            (current ?? []).filter((s) => s.cwd !== cwd),
+            (current ?? []).filter((s) => s.projectKey !== projectKey),
           rollbackOnError: true,
         },
       );
@@ -423,10 +437,13 @@ export default function Command() {
       ? servers
       : servers.filter((s) => s.tool === toolFilter);
 
+  // Group by projectKey (git common-dir for git projects, cwd otherwise) so
+  // sibling worktrees of the same repo collapse into one section. Each row
+  // still carries its own cwd/branch so per-row actions stay correct.
   const grouped = Object.entries(
     visible.reduce(
       (acc, s) => {
-        (acc[s.cwd] ??= []).push(s);
+        (acc[s.projectKey] ??= []).push(s);
         return acc;
       },
       {} as Record<string, DevServer[]>,
@@ -475,10 +492,17 @@ export default function Command() {
           }
         />
       )}
-      {grouped.map(([cwd, projectServers]) => (
+      {grouped.map(([projectKey, projectServers]) => (
         <List.Section
-          key={cwd}
-          title={prefs.showFullPath ? cwd : projectServers[0].projectName}
+          key={projectKey}
+          title={
+            // When showFullPath is on, use the first row's cwd as a concrete
+            // path hint. (For multi-worktree sections the per-row branch tag
+            // and its tooltip distinguish which worktree each row belongs to.)
+            prefs.showFullPath
+              ? projectServers[0].cwd
+              : projectServers[0].projectName
+          }
           subtitle={`${projectServers.length} server${projectServers.length > 1 ? "s" : ""}`}
         >
           {projectServers.map((server) => (
@@ -487,7 +511,7 @@ export default function Command() {
               server={server}
               terminalApp={terminalApp}
               onKill={() => kill(server.pid)}
-              onKillProject={() => killProject(cwd)}
+              onKillProject={() => killProject(projectKey)}
               onKillAll={killAll}
               onRestart={() => restart(server)}
               onRefresh={refresh}
