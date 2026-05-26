@@ -13,7 +13,7 @@ A keyboard-first dashboard for every dev server you have running. See them group
 - **Smart restart** picks the right package manager (npm, pnpm, yarn, bun) from the project's lockfile, polls until the new server binds a port, and surfaces failures with a link to the log
 - **Confirm dialogs on bulk-kill** ensure destructive actions ask first, with a "Don't ask again" option for project-scoped kills
 - **Open in your terminal** uses a configurable terminal app preference (Terminal, iTerm, Warp, Ghostty, etc.)
-- **Tool filter** appears in the search bar dropdown when you have multiple frameworks running
+- **Search and filter** by typing a project name, branch, or port into the search bar; a framework dropdown appears when you have multiple frameworks running
 - **Stays open** because the window never closes after an action, so you can chain kills and restarts in one session
 - **Auto-refresh** updates the list automatically on a configurable interval, plus manual `⌘R`
 

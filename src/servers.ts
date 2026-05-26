@@ -322,7 +322,22 @@ function cwdSlug(cwd: string): string {
 // - The log filename is keyed by a slug of cwd so it stays meaningful after
 //   the PID has been replaced by the new server.
 export async function restartServer(server: DevServer): Promise<void> {
-  process.kill(server.pid);
+  // SIGKILL (vs default SIGTERM) so the old listener releases the port
+  // immediately — no graceful-shutdown window where the new spawn races
+  // the old process for the same port. Poll process.kill(pid, 0) until
+  // ESRCH to confirm exit before spawning. Both SIGKILL and signal-0 are
+  // mapped to TerminateProcess / OpenProcess on Windows, so this stays
+  // portable when we add the Windows backend.
+  process.kill(server.pid, "SIGKILL");
+  const deadline = Date.now() + 500;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(server.pid, 0);
+      await new Promise((r) => setTimeout(r, 20));
+    } catch {
+      break;
+    }
+  }
   const pm = detectPackageManager(server.cwd);
   const [cmd, args] = PM_COMMAND[pm];
   const logPath = path.join(

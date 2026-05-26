@@ -14,6 +14,8 @@ import {
   showToast,
 } from "@raycast/api";
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
+import * as os from "node:os";
+import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchServers, killProcess, restartServer } from "./servers";
 import { DevServer } from "./types";
@@ -218,6 +220,9 @@ function ServerItem({
       icon={icon}
       title={`localhost:${server.port}`}
       subtitle={subtitle}
+      keywords={[server.projectName, server.branch].filter((v): v is string =>
+        Boolean(v),
+      )}
       accessories={[
         ...(show.uptime
           ? [
@@ -442,7 +447,7 @@ export default function Command() {
       } else {
         toast.style = Toast.Style.Failure;
         toast.title = "Restart timed out";
-        toast.message = "Check /tmp/dev-servers-restart-*.log";
+        toast.message = `Check ${path.join(os.tmpdir(), "dev-servers-restart-*.log")}`;
       }
     } catch (err) {
       await showFailureToast(err, {

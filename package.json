@@ -8,6 +8,19 @@
   "categories": [
     "Developer Tools"
   ],
+  "keywords": [
+    "dev server",
+    "dev servers",
+    "localhost",
+    "port",
+    "ports",
+    "kill",
+    "restart",
+    "process",
+    "dashboard",
+    "manage",
+    "monitor"
+  ],
   "platforms": [
     "macOS"
   ],
