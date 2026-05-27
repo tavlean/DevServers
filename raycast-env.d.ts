@@ -30,10 +30,21 @@ declare namespace Preferences {
   /** undefined - When a custom domain (e.g. via portless) points at a dev server, also show the localhost:PORT pill alongside it */
   "showLocalUrl": boolean
 }
+  /** Preferences accessible in the `start` command */
+  export type Start = ExtensionPreferences & {
+  /** Terminal App - Which terminal to open when using "Open in Terminal". Defaults to macOS Terminal if unset. */
+  "terminalApp"?: import("@raycast/api").Application,
+  /** After Start - Once the new dev server starts listening, automatically open its URL in your default browser */
+  "autoOpenInBrowser": boolean,
+  /** Confirmations - Show a confirmation alert before spawning more than one dev server from a multi-folder Finder selection */
+  "confirmMultiStart": boolean
+}
 }
 
 declare namespace Arguments {
   /** Arguments passed to the `index` command */
   export type Index = {}
+  /** Arguments passed to the `start` command */
+  export type Start = {}
 }
 

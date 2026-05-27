@@ -1,0 +1,482 @@
+import {
+  Action,
+  ActionPanel,
+  Alert,
+  Application,
+  Color,
+  Form,
+  Icon,
+  LaunchType,
+  List,
+  LocalStorage,
+  confirmAlert,
+  getPreferenceValues,
+  getSelectedFinderItems,
+  launchCommand,
+  useNavigation,
+} from "@raycast/api";
+import {
+  showFailureToast,
+  useCachedPromise,
+  useLocalStorage,
+} from "@raycast/utils";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  RecentProject,
+  recordSeenBatch,
+  removeRecent as removeRecentStore,
+} from "./recents";
+import { fetchServers, findProjectRoot } from "./servers";
+import { toolColor, toolLabel } from "./tool-display";
+import { DevServer } from "./types";
+
+const DEFAULT_TERMINAL: Application = {
+  name: "Terminal",
+  path: "/System/Applications/Utilities/Terminal.app",
+  bundleId: "com.apple.Terminal",
+};
+
+const STORAGE_KEY = "recent-projects";
+
+// One-time discoverability nudge for the autoOpenInBrowser pref. The
+// Start command pre-decides whether to surface the CTA (so the counter
+// is consistent regardless of whether the user lands on a confirm or
+// goes straight to spawn), then passes the decision through launchContext
+// for the dashboard to render on its toast.
+const AUTO_OPEN_HINT_MAX = 3;
+const AUTO_OPEN_HINT_KEY = "auto-open-hint-shown";
+
+async function shouldShowAutoOpenHint(): Promise<boolean> {
+  const raw = await LocalStorage.getItem<string>(AUTO_OPEN_HINT_KEY);
+  const count = raw ? parseInt(raw, 10) : 0;
+  return Number.isFinite(count) && count < AUTO_OPEN_HINT_MAX;
+}
+
+async function bumpAutoOpenHint(): Promise<void> {
+  const raw = await LocalStorage.getItem<string>(AUTO_OPEN_HINT_KEY);
+  const count = raw ? parseInt(raw, 10) : 0;
+  const next = Number.isFinite(count) ? count + 1 : 1;
+  await LocalStorage.setItem(AUTO_OPEN_HINT_KEY, String(next));
+}
+
+// Best-guess framework for a project, read from package.json dependencies.
+// UI tag only — process inspection is still the source of truth for a
+// running server.
+function guessFramework(cwd: string): string | undefined {
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(cwd, "package.json"), "utf8"),
+    ) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const deps = {
+      ...(pkg.dependencies ?? {}),
+      ...(pkg.devDependencies ?? {}),
+    };
+    if ("next" in deps) return "next";
+    if ("@sveltejs/kit" in deps) return "sveltekit";
+    if ("svelte" in deps) return "svelte";
+    if ("astro" in deps) return "astro";
+    if ("nuxt" in deps || "nuxt3" in deps) return "nuxt";
+    if ("@remix-run/dev" in deps) return "remix";
+    if ("gatsby" in deps) return "gatsby";
+    if ("vite" in deps) return "vite";
+    if ("webpack" in deps) return "webpack";
+    if ("parcel" in deps) return "parcel";
+    if ("turbo" in deps) return "turbo";
+    if ("esbuild" in deps) return "esbuild";
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatLastSeen(ts: number): string {
+  const seconds = Math.floor((Date.now() - ts) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  const days = Math.floor(seconds / 86400);
+  return days === 1 ? "yesterday" : `${days}d ago`;
+}
+
+interface Target {
+  cwd: string;
+  projectName: string;
+}
+
+function resolveTarget(rawPath: string): Target | null {
+  const cwd = findProjectRoot(rawPath);
+  if (!cwd) return null;
+  return { cwd, projectName: path.basename(cwd) };
+}
+
+// Hand the spawn request off to the dashboard. The dashboard owns
+// confirms, kill+spawn, and the toast lifecycle — this command only
+// resolves the target list and navigates. Faster perceived flow for
+// the user (dashboard appears immediately instead of waiting on a
+// blank Start view).
+async function launchSpawn(
+  targets: Array<{ cwd: string; name: string }>,
+  options: { autoOpen: boolean; confirmMulti: boolean },
+): Promise<void> {
+  const showAutoOpenHint =
+    !options.autoOpen && (await shouldShowAutoOpenHint());
+  if (showAutoOpenHint) await bumpAutoOpenHint();
+  try {
+    await launchCommand({
+      name: "index",
+      type: LaunchType.UserInitiated,
+      context: {
+        spawn: {
+          targets,
+          autoOpen: options.autoOpen,
+          confirmMulti: options.confirmMulti,
+          showAutoOpenHint,
+        },
+      },
+    });
+  } catch (err) {
+    await showFailureToast(err, { title: "Couldn't open the dashboard" });
+  }
+}
+
+// Pushed onto the nav stack from the picker when the user picks "Choose
+// Folder…", so projects that aren't yet in recents (and aren't in
+// Finder's selection) still have a path into the command.
+function ChooseFolderForm({ autoOpen }: { autoOpen: boolean }) {
+  return (
+    <Form
+      actions={
+        <ActionPanel>
+          <Action.SubmitForm
+            title="Start Dev Server"
+            icon={Icon.Play}
+            onSubmit={async (values: { folders: string[] }) => {
+              const raw = values.folders?.[0];
+              if (!raw) {
+                await showFailureToast(undefined, {
+                  title: "Pick a folder first",
+                });
+                return false;
+              }
+              const target = resolveTarget(raw);
+              if (!target) {
+                await showFailureToast(undefined, {
+                  title: "No package.json found",
+                  message: "That folder isn't inside a Node project.",
+                });
+                return false;
+              }
+              await launchSpawn(
+                [{ cwd: target.cwd, name: target.projectName }],
+                { autoOpen, confirmMulti: false },
+              );
+            }}
+          />
+        </ActionPanel>
+      }
+    >
+      <Form.Description text="Pick a project folder containing a package.json. We'll detect the package manager and start its dev script." />
+      <Form.FilePicker
+        id="folders"
+        title="Project Folder"
+        allowMultipleSelection={false}
+        canChooseDirectories
+        canChooseFiles={false}
+      />
+    </Form>
+  );
+}
+
+interface RowProps {
+  recent: RecentProject;
+  framework?: string;
+  terminalApp: Application;
+  autoOpen: boolean;
+  onChange: () => Promise<void>;
+}
+
+function RecentRow({
+  recent,
+  framework,
+  terminalApp,
+  autoOpen,
+  onChange,
+}: RowProps) {
+  async function start() {
+    await launchSpawn([{ cwd: recent.cwd, name: recent.projectName }], {
+      autoOpen,
+      confirmMulti: false,
+    });
+  }
+
+  async function remove() {
+    const ok = await confirmAlert({
+      title: `Remove ${recent.projectName} from recents?`,
+      message:
+        "The project files stay where they are; only the recents entry is removed.",
+      primaryAction: {
+        title: "Remove",
+        style: Alert.ActionStyle.Destructive,
+      },
+    });
+    if (!ok) return;
+    await removeRecentStore(recent.cwd);
+    await onChange();
+  }
+
+  const tool = framework;
+  const accessories: List.Item.Accessory[] = [
+    {
+      text: formatLastSeen(recent.lastSeen),
+      tooltip: `Last seen ${new Date(recent.lastSeen).toLocaleString()}`,
+    },
+  ];
+  if (tool) {
+    accessories.push({
+      tag: { value: toolLabel(tool), color: toolColor(tool) },
+    });
+  }
+
+  const branchSubtitle = recent.branch
+    ? { value: recent.branch, tooltip: `Branch: ${recent.branch}` }
+    : undefined;
+
+  // Prefer the cached favicon for projects we've seen running. The
+  // dashboard persists this onto the recents entry, so even stopped
+  // projects display their real icon.
+  const icon = recent.favicon
+    ? { source: recent.favicon, fallback: Icon.Folder }
+    : {
+        source: Icon.Folder,
+        tintColor: tool ? toolColor(tool) : Color.SecondaryText,
+      };
+
+  return (
+    <List.Item
+      icon={icon}
+      title={recent.projectName}
+      subtitle={branchSubtitle}
+      keywords={[recent.cwd, recent.branch].filter((v): v is string =>
+        Boolean(v),
+      )}
+      accessories={accessories}
+      actions={
+        <ActionPanel>
+          <Action title="Start Dev Server" icon={Icon.Play} onAction={start} />
+          <ActionPanel.Section>
+            <Action.Open
+              title={`Open in ${terminalApp.name}`}
+              icon={Icon.Terminal}
+              target={recent.cwd}
+              application={terminalApp}
+              shortcut={{ modifiers: ["cmd"], key: "t" }}
+            />
+            <Action.ShowInFinder
+              path={recent.cwd}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+            />
+            <Action.CopyToClipboard
+              title="Copy Path"
+              content={recent.cwd}
+              shortcut={{ modifiers: ["cmd"], key: "c" }}
+            />
+          </ActionPanel.Section>
+          <ActionPanel.Section>
+            <Action
+              title="Remove from Recents"
+              icon={Icon.Trash}
+              style={Action.Style.Destructive}
+              shortcut={{ modifiers: ["ctrl"], key: "x" }}
+              onAction={remove}
+            />
+          </ActionPanel.Section>
+        </ActionPanel>
+      }
+    />
+  );
+}
+
+interface PickerProps {
+  autoOpen: boolean;
+  terminalApp: Application;
+}
+
+// Picker view shown when there's no Finder selection. Lists recent
+// projects (excluding currently-running ones, which live in the
+// dashboard) and an always-present "Choose Folder…" entry for one-off
+// picks.
+function PickerView({ autoOpen, terminalApp }: PickerProps) {
+  const { push } = useNavigation();
+
+  // Passive migration: every mount triggers an empty recordSeenBatch
+  // which canonicalizes any non-symlink-resolved entries left over from
+  // earlier builds, so the running-server filter below matches reliably.
+  useEffect(() => {
+    void recordSeenBatch([]).catch(() => {});
+  }, []);
+
+  const {
+    value: recents,
+    isLoading: isLoadingRecents,
+    setValue: setRecents,
+  } = useLocalStorage<RecentProject[]>(STORAGE_KEY, []);
+  const {
+    data: running = [],
+    isLoading: isLoadingRunning,
+    revalidate: revalidateRunning,
+  } = useCachedPromise(fetchServers, [], { keepPreviousData: true });
+
+  const runningByCwd = useMemo(() => {
+    const m = new Map<string, DevServer>();
+    for (const s of running) m.set(s.cwd, s);
+    return m;
+  }, [running]);
+
+  const frameworkByCwd = useMemo(() => {
+    const m = new Map<string, string | undefined>();
+    for (const r of recents ?? []) m.set(r.cwd, guessFramework(r.cwd));
+    return m;
+  }, [recents]);
+
+  // Hide entries that are currently running (the dashboard owns them) or
+  // whose folder no longer exists on disk. We keep them in storage so a
+  // remounted external drive or stopped server reappears.
+  const visible = useMemo(() => {
+    return (recents ?? [])
+      .filter((r) => {
+        if (runningByCwd.has(r.cwd)) return false;
+        try {
+          return fs.statSync(r.cwd).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort((a, b) => b.lastSeen - a.lastSeen);
+  }, [recents, runningByCwd]);
+
+  async function refresh() {
+    await setRecents([...(recents ?? [])]);
+    await revalidateRunning();
+  }
+
+  const isLoading = isLoadingRecents || isLoadingRunning;
+  const hasRecents = visible.length > 0;
+
+  return (
+    <List
+      isLoading={isLoading}
+      searchBarPlaceholder="Filter recent projects..."
+    >
+      <List.Section title="Browse">
+        <List.Item
+          icon={Icon.NewFolder}
+          title="Choose Folder…"
+          subtitle="Pick a project that isn't in your recents"
+          actions={
+            <ActionPanel>
+              <Action
+                title="Choose Folder…"
+                icon={Icon.NewFolder}
+                onAction={() => push(<ChooseFolderForm autoOpen={autoOpen} />)}
+              />
+            </ActionPanel>
+          }
+        />
+      </List.Section>
+      {hasRecents && (
+        <List.Section title="Recent Projects" subtitle={`${visible.length}`}>
+          {visible.map((r) => (
+            <RecentRow
+              key={r.cwd}
+              recent={r}
+              framework={frameworkByCwd.get(r.cwd)}
+              terminalApp={terminalApp}
+              autoOpen={autoOpen}
+              onChange={refresh}
+            />
+          ))}
+        </List.Section>
+      )}
+    </List>
+  );
+}
+
+// Unified command entry point. This command is now a pure launcher: it
+// resolves the Finder selection (if any) into a target list and hands
+// off to the dashboard, which owns the confirms, kill+spawn, and toast
+// lifecycle. The user lands on the dashboard immediately rather than
+// waiting on a blank Start view for slow pre-spawn work.
+//
+//   ┌─ Finder selection present?
+//   │      ├─ Yes → resolve targets, launchCommand to dashboard with
+//   │      │       spawn details in launchContext.
+//   │      └─ No  → render the picker (recents + "Choose Folder…").
+export default function Command() {
+  const prefs = getPreferenceValues<Preferences.Start>();
+  const autoOpen = prefs.autoOpenInBrowser ?? false;
+  const confirmMulti = prefs.confirmMultiStart ?? true;
+  const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
+
+  const [phase, setPhase] = useState<"checking" | "picker">("checking");
+  // Guard against React's StrictMode double-invocation of effects in
+  // development, which would otherwise probe Finder twice.
+  const probedRef = useRef(false);
+
+  useEffect(() => {
+    if (probedRef.current) return;
+    probedRef.current = true;
+    void (async () => {
+      let selection: Array<{ path: string }>;
+      try {
+        selection = await getSelectedFinderItems();
+      } catch {
+        setPhase("picker");
+        return;
+      }
+      if (selection.length === 0) {
+        setPhase("picker");
+        return;
+      }
+
+      // Resolve each Finder item to a project root, dedup by cwd.
+      const seen = new Set<string>();
+      const targets: Target[] = [];
+      for (const item of selection) {
+        const t = resolveTarget(item.path);
+        if (!t || seen.has(t.cwd)) continue;
+        seen.add(t.cwd);
+        targets.push(t);
+      }
+      if (targets.length === 0) {
+        await showFailureToast(undefined, {
+          title: "No package.json in selection",
+          message: "Pick a project from your recents instead.",
+        });
+        setPhase("picker");
+        return;
+      }
+
+      // Hand off to the dashboard. No fetchServers, no confirms, no
+      // spawn here — the dashboard handles all of it from its own
+      // lifecycle, so the user sees the dashboard within a few hundred
+      // ms instead of waiting on this view.
+      await launchSpawn(
+        targets.map((t) => ({ cwd: t.cwd, name: t.projectName })),
+        { autoOpen, confirmMulti },
+      );
+    })();
+  }, [autoOpen, confirmMulti]);
+
+  if (phase === "picker") {
+    return <PickerView autoOpen={autoOpen} terminalApp={terminalApp} />;
+  }
+
+  // Minimal placeholder while we resolve the Finder selection. Just the
+  // loading bar — the dashboard is right behind it.
+  return <List isLoading={true} searchBarPlaceholder="Starting dev server…" />;
+}
