@@ -313,19 +313,110 @@ export function detectPackageManager(cwd: string): PackageManager {
   return "npm";
 }
 
-const PM_COMMAND: Record<PackageManager, [string, string[]]> = {
-  bun: ["bun", ["run", "dev"]],
-  pnpm: ["pnpm", ["dev"]],
-  yarn: ["yarn", ["dev"]],
-  npm: ["npm", ["run", "dev"]],
+// All managers honor `<pm> run <script>`. Explicit `run` works for arbitrary
+// script names (including ones with colons like `dev:web`) and removes the
+// ambiguity of the bare-shorthand form.
+const PM_RUN: Record<PackageManager, [string, string[]]> = {
+  bun: ["bun", ["run"]],
+  pnpm: ["pnpm", ["run"]],
+  yarn: ["yarn", ["run"]],
+  npm: ["npm", ["run"]],
 };
+
+// Heuristic tokens for the script-value fallback in pickDevScript. We match
+// the binary names that frameworks actually invoke in dev mode, with negative
+// lookaheads on the common production subcommands so we don't accidentally
+// pick a `build` or `preview` script. Ordering doesn't matter — first hit
+// wins inside any given script value.
+const DEV_SCRIPT_TOKENS: RegExp[] = [
+  /\bvite\b(?!\s+(?:build|preview|optimize))/,
+  /\bnext\s+dev\b/,
+  /\bastro\s+dev\b/,
+  /\bnuxt\s+dev\b/,
+  /\bwebpack-dev-server\b/,
+  /\bwebpack\s+serve\b/,
+  /\bparcel\b(?!\s+build)/,
+  /\bgatsby\s+develop\b/,
+  /\bremix\s+(?:dev|vite:dev)\b/,
+  /\bturbo\s+(?:run\s+)?dev\b/,
+  /\bbun\s+(?:--watch|--hot|run\s+dev)\b/,
+  /\bnodemon\b/,
+  /\btsx\s+watch\b/,
+  /\bts-node-dev\b/,
+  /\bserve\b/,
+  /\bhttp-server\b/,
+  /\blive-server\b/,
+];
+
+// Pick the most likely dev-server script in a project. First tries the
+// canonical key chain (`dev` → `start` → `develop`), then falls back to a
+// value-side heuristic so monorepo conventions like `dev:web` or
+// `start:dev` still resolve. Returns the script key (not the command), or
+// null when nothing in package.json looks like a dev server.
+export function pickDevScript(cwd: string): string | null {
+  let pkg: { scripts?: Record<string, unknown> };
+  try {
+    pkg = JSON.parse(
+      fs.readFileSync(path.join(cwd, "package.json"), "utf8"),
+    ) as { scripts?: Record<string, unknown> };
+  } catch {
+    return null;
+  }
+  const scripts = pkg.scripts ?? {};
+  for (const name of ["dev", "start", "develop"]) {
+    if (typeof scripts[name] === "string") return name;
+  }
+  // Iterate in declared order (Node preserves JSON insertion order), so the
+  // pick is deterministic for a given package.json.
+  for (const [name, value] of Object.entries(scripts)) {
+    if (typeof value !== "string") continue;
+    if (DEV_SCRIPT_TOKENS.some((re) => re.test(value))) return name;
+  }
+  return null;
+}
+
+// Canonicalize a path so two equivalent forms (alias / symlink / `/tmp` vs
+// `/private/tmp`) compare equal. Critical for the "is this project already
+// running?" check: lsof reports realpath for a process's cwd, so anything
+// we compare against it must also be realpath. Returns the input on
+// failure so callers don't have to handle a missing path twice.
+export function canonicalCwd(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return p;
+  }
+}
+
+// Walk up from a filesystem path to the nearest directory containing a
+// package.json. Used to resolve a Finder selection (which may be a file, a
+// subfolder, or the project root itself) to a project root we can spawn in.
+// The returned path is canonicalized so it round-trips through process
+// inspection without symlink-induced mismatches. Returns null when the
+// path isn't inside any Node project.
+export function findProjectRoot(startPath: string): string | null {
+  let cur: string;
+  try {
+    const st = fs.statSync(startPath);
+    cur = st.isDirectory() ? startPath : path.dirname(startPath);
+  } catch {
+    return null;
+  }
+  for (;;) {
+    if (fs.existsSync(path.join(cur, "package.json"))) return canonicalCwd(cur);
+    const parent = path.dirname(cur);
+    if (parent === cur) return null;
+    cur = parent;
+  }
+}
 
 // Slugify cwd for use in a temp-dir log filename.
 function cwdSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "root";
 }
 
-// Restart a dev server using the project's detected package manager.
+// Spawn a dev server for a project. Shared by both the Start Dev Server
+// command and the restart flow.
 //
 // Implementation notes:
 // - We launch via `/bin/zsh -ilc` so the user's PATH is loaded. `-l` reads
@@ -338,34 +429,76 @@ function cwdSlug(cwd: string): string {
 //   extension command's lifetime.
 // - The log filename is keyed by a slug of cwd so it stays meaningful after
 //   the PID has been replaced by the new server.
-export async function restartServer(server: DevServer): Promise<void> {
-  // SIGKILL (vs default SIGTERM) so the old listener releases the port
-  // immediately — no graceful-shutdown window where the new spawn races
-  // the old process for the same port. Poll process.kill(pid, 0) until
-  // ESRCH to confirm exit before spawning. Both SIGKILL and signal-0 are
-  // mapped to TerminateProcess / OpenProcess on Windows, so this stays
-  // portable when we add the Windows backend.
-  process.kill(server.pid, "SIGKILL");
-  const deadline = Date.now() + 500;
-  while (Date.now() < deadline) {
-    try {
-      process.kill(server.pid, 0);
-      await new Promise((r) => setTimeout(r, 20));
-    } catch {
-      break;
-    }
+//
+// Throws if pickDevScript can't find a runnable script. Returns the picked
+// script name and detected package manager so callers can surface them in
+// success messages.
+export async function startDevServer(
+  cwd: string,
+  scriptName?: string,
+): Promise<{ pm: PackageManager; script: string }> {
+  const script = scriptName ?? pickDevScript(cwd);
+  if (!script) {
+    throw new Error(
+      "No dev script found in package.json. Expected one of: dev, start, develop, or a script that invokes a known dev-server tool.",
+    );
   }
-  const pm = detectPackageManager(server.cwd);
-  const [cmd, args] = PM_COMMAND[pm];
+  const pm = detectPackageManager(cwd);
+  const [cmd, baseArgs] = PM_RUN[pm];
+  const args = [...baseArgs, script];
   const logPath = path.join(
     os.tmpdir(),
-    `dev-servers-restart-${cwdSlug(server.cwd)}.log`,
+    `dev-servers-spawn-${cwdSlug(cwd)}.log`,
   );
   const out = fs.openSync(logPath, "a");
   const child = spawn("/bin/zsh", ["-ilc", `exec ${cmd} ${args.join(" ")}`], {
-    cwd: server.cwd,
+    cwd,
     detached: true,
     stdio: ["ignore", out, out],
   });
   child.unref();
+  return { pm, script };
+}
+
+// Path of the spawn log for a given cwd. Useful for error toasts that point
+// the user at the right file when a spawn appears to fail.
+export function spawnLogPath(cwd: string): string {
+  return path.join(os.tmpdir(), `dev-servers-spawn-${cwdSlug(cwd)}.log`);
+}
+
+// SIGKILL the given PID and wait until it actually exits, with a 500ms
+// upper bound. SIGKILL (vs default SIGTERM) so the listener releases the
+// port immediately — no graceful-shutdown window where a new spawn could
+// race the old process. Polling process.kill(pid, 0) until ESRCH
+// confirms the exit before we hand control back to the caller.
+//
+// Best-effort: any error along the way is swallowed. If the kernel
+// refuses to signal the process or it dies between snapshots, the next
+// spawn will either succeed cleanly or fail to bind the port — both of
+// which surface their own errors at the right layer.
+//
+// Cross-platform: both SIGKILL and signal-0 map cleanly to Windows'
+// TerminateProcess / OpenProcess, so this stays portable.
+export async function killServer(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + 500;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+      await new Promise((r) => setTimeout(r, 20));
+    } catch {
+      return;
+    }
+  }
+}
+
+// Restart a dev server: force-kill the old listener, then spawn a
+// replacement via startDevServer.
+export async function restartServer(server: DevServer): Promise<void> {
+  await killServer(server.pid);
+  await startDevServer(server.cwd);
 }
