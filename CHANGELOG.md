@@ -1,5 +1,32 @@
 # Dev Servers Changelog
 
+## [Start Dev Server] - {PR_MERGE_DATE}
+
+Adds a `Start Dev Server` command for spinning up dev servers without leaving Raycast. Works from a Finder selection, from a list of recently-seen projects, or from a native folder picker.
+
+### Start Dev Server
+
+- **From Finder**: select a project folder (or any file inside one) and run **Start Dev Server**. The extension walks up to the nearest `package.json`, detects the package manager (npm / pnpm / yarn / bun), picks the right script, and spawns it with the same PATH-aware login-shell pattern used by Restart. The dashboard opens immediately and shows a "Starting…" toast that transitions to "X is running" the moment the server binds a port.
+- **From recents**: run the command with nothing selected in Finder and you get a picker over the projects the extension has seen running recently. Recents auto-populate from the dashboard's polling loop — no explicit bookmarking. LRU-bounded at 30 entries. Running projects are hidden from this list (they live in the dashboard); they reappear once stopped.
+- **From anywhere**: the picker also exposes a **Choose Folder…** entry that opens a native folder picker — useful for projects that aren't in your recents yet.
+- Each picker row shows last-seen, git branch when applicable, and a framework tag inferred from `package.json` dependencies. Cached favicons appear inline once the dashboard has seen the project running — so even stopped projects keep their real icon. Per-row actions: Start, Open in Terminal (`⌘T`), Show in Finder (`⌘⇧F`), Copy Path (`⌘C`), Remove from Recents (`⌃X`).
+- Folders that no longer exist on disk are hidden this render but kept in storage so they reappear when (for example) an external drive remounts.
+
+### Behavior
+
+- Script picker tries `dev` → `start` → `develop` first, then scans script values for known dev-server tools (Vite, Next, Astro, Nuxt, Webpack, Parcel, Gatsby, Remix, Turbo, Bun watch/hot, nodemon, tsx watch, ts-node-dev, serve, http-server, live-server). Monorepo conventions like `dev:web` and `start:dev` resolve out of the box.
+- Already running on that folder? You get one consolidated alert — `X is already running. Restart?` for a single target, `All 3 already running. Restart them?` when every selected folder is running, or `2 of 3 already running. Restart these, then start the other one?` for the mixed case. No more N-alert cascades for N-folder selections.
+- Multi-folder selection prompts for confirmation by default — useful for monorepo siblings or a "frontend + backend" startup, with an opt-out preference for users who do this regularly.
+- New **Open in browser when the port binds** preference auto-opens the URL once the new server starts listening. Off by default; a one-time hint surfaces it in the in-flight toast for the first few starts.
+
+### Under the hood
+
+- The dashboard is the controller for the entire spawn flow — the launching command resolves a target list and hands off via `launchContext`. Lets the user land on the dashboard immediately and watch the spawn happen there, rather than waiting on a blank loading view for a pre-spawn `fetchServers` call.
+- Spawn lifecycle is a clean state machine on the dashboard: `idle → pending → confirming → spawning → done`. The "Starting…" toast lives on the dashboard so it's visible the whole time the user is waiting, and transitions to a green "running" state the moment every expected cwd appears in the polling loop.
+- All filesystem paths flow through `canonicalCwd` (a `realpathSync` wrapper) so symlinked project paths compare equal between Finder selections, the recents store, and `lsof`'s view of running processes.
+- Extracted `startDevServer(cwd)` and `killServer(pid)` so the new command and the existing restart flow share one spawn path. Restart is now `killServer + startDevServer`.
+- Shared `tool-display.ts` so the framework tag styling stays consistent across the dashboard and the picker.
+
 ## [Portless & Shortcuts] - 2026-05-26
 
 Surfaces custom local domains from [portless](https://github.com/vercel-labs/portless), and tightens the action panel, shortcuts, and preferences to align with Raycast conventions.
