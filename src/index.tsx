@@ -6,10 +6,12 @@ import {
   Color,
   Icon,
   Image,
+  LaunchProps,
   List,
   Toast,
   confirmAlert,
   getPreferenceValues,
+  open,
   openExtensionPreferences,
   showToast,
 } from "@raycast/api";
@@ -17,7 +19,20 @@ import { showFailureToast, useCachedPromise } from "@raycast/utils";
 import * as os from "node:os";
 import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchServers, killProcess, restartServer } from "./servers";
+import {
+  recordSeen,
+  recordSeenBatch,
+  toRecent,
+  updateRecentFavicon,
+} from "./recents";
+import {
+  fetchServers,
+  killProcess,
+  killServer,
+  restartServer,
+  startDevServer,
+} from "./servers";
+import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
 
 const DEFAULT_TERMINAL: Application = {
@@ -39,66 +54,6 @@ function formatUptime(startedAt: Date): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-}
-
-// Display label for the tool tag. We keep the internal `tool` field lowercase
-// (used for grouping, color lookup, dropdown filter values) and only stylize
-// on the way to the UI. Anything not in this map renders as-is.
-const TOOL_DISPLAY_NAMES: Record<string, string> = {
-  vite: "Vite",
-  sveltekit: "SvelteKit",
-  svelte: "Svelte",
-  astro: "Astro",
-  next: "Next.js",
-  nuxt: "Nuxt",
-  webpack: "Webpack",
-  parcel: "Parcel",
-  gatsby: "Gatsby",
-  remix: "Remix",
-  turbo: "Turbo",
-  esbuild: "esbuild", // intentionally lowercase per upstream brand
-  bun: "Bun",
-  node: "Node",
-  serve: "Serve",
-  "http-server": "http-server", // intentionally lowercase per package name
-  "live-server": "Live Server",
-};
-
-function toolLabel(tool: string): string {
-  return TOOL_DISPLAY_NAMES[tool.toLowerCase()] ?? tool;
-}
-
-// Theme-adaptive overrides for the few frameworks where the named palette
-// renders too muddy or too low-contrast against Raycast's translucent tag
-// background, especially on selected rows in dark mode. The rest fall
-// through to the named palette which works fine.
-const TOOL_COLOR_OVERRIDES: Record<string, { light: string; dark: string }> = {
-  // Purples: deepened in light mode for readable contrast
-  vite: { light: "#5B21B6", dark: "#B49CFF" },
-  astro: { light: "#5B21B6", dark: "#B49CFF" },
-  gatsby: { light: "#5B21B6", dark: "#B49CFF" },
-  // Yellows: Raycast's Color.Yellow is too pale in light mode, so use a deeper
-  // amber there. Keep a warm yellow in dark mode where it reads fine.
-  parcel: { light: "#A16207", dark: "#FDE047" },
-  esbuild: { light: "#A16207", dark: "#FDE047" },
-  bun: { light: "#A16207", dark: "#FDE047" },
-  // Next: Tailwind gray-900 / gray-100 (blue-tinted gray, not neutral)
-  next: { light: "#111827", dark: "#F3F4F6" },
-};
-
-function toolColor(tool: string): Color | { light: string; dark: string } {
-  const key = tool.toLowerCase();
-  if (TOOL_COLOR_OVERRIDES[key]) return TOOL_COLOR_OVERRIDES[key];
-  const colors: Record<string, Color> = {
-    nuxt: Color.Green,
-    webpack: Color.Blue,
-    svelte: Color.Orange,
-    sveltekit: Color.Orange,
-    remix: Color.Magenta,
-    turbo: Color.Blue,
-    node: Color.Green,
-  };
-  return colors[key] ?? Color.Blue;
 }
 
 // Fetch with a hard 3s timeout. Returns null on any failure so callers can
@@ -209,6 +164,17 @@ function ServerItem({
       keepPreviousData: true,
     },
   );
+  // Persist resolved favicons onto the project's recents entry so the
+  // picker (in the Start command) can render the real icon even when the
+  // server is stopped. updateRecentFavicon is a no-op when nothing
+  // changed, so this is cheap to call on every render.
+  useEffect(() => {
+    if (!faviconUrl) return;
+    updateRecentFavicon(server.cwd, faviconUrl).catch(() => {
+      // Picker iconography is best-effort; failing to persist must not
+      // disrupt the dashboard.
+    });
+  }, [server.cwd, faviconUrl]);
   const icon: Image.ImageLike = faviconUrl
     ? { source: faviconUrl, fallback: Icon.Globe }
     : { source: Icon.Globe, tintColor: toolColor(server.tool) };
@@ -368,8 +334,103 @@ function ServerItem({
   );
 }
 
-export default function Command() {
+// Spawn request handed off by the Start Dev Server command. The dashboard
+// is the controller for the entire spawn flow — confirms, kill+spawn,
+// toast lifecycle, and the eventual transition to a steady-state — so
+// the user sees the dashboard immediately rather than waiting on a blank
+// Start view for the pre-spawn `fetchServers` call.
+interface SpawnRequest {
+  targets: Array<{ cwd: string; name: string }>;
+  // Multi-folder confirm gate, set by the Start command's preference.
+  // Always false for single-target spawns (picker rows, folder picker).
+  confirmMulti: boolean;
+  // Open each new server's URL in the browser when it binds.
+  autoOpen: boolean;
+  // Attach a one-time "Auto-open in Browser?" CTA to the Starting toast.
+  // The Start command pre-decides this based on a usage counter.
+  showAutoOpenHint: boolean;
+}
+
+interface DashboardLaunchContext {
+  spawn?: SpawnRequest;
+}
+
+// Format a list of names with English-style commas and "and":
+//   ["A"]           -> "A"
+//   ["A", "B"]      -> "A and B"
+//   ["A", "B", "C"] -> "A, B, and C"
+function joinNames(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+}
+
+// Single batch confirmation that covers any number of already-running
+// targets in one prompt. Returns true to proceed, false to cancel.
+async function confirmRestartBatch(
+  runningTargets: Array<{
+    target: { name: string };
+    existing: DevServer;
+  }>,
+  totalCount: number,
+): Promise<boolean> {
+  if (runningTargets.length === 0) return true;
+  const names = runningTargets.map((r) => r.target.name);
+  const running = runningTargets.length;
+  const total = totalCount;
+  const remainingCount = total - running;
+
+  if (total === 1) {
+    return await confirmAlert({
+      title: `${names[0]} is already running`,
+      message: `A dev server is listening on ${runningTargets[0].existing.url}. Restart it?`,
+      primaryAction: { title: "Restart" },
+    });
+  }
+  if (running === total) {
+    return await confirmAlert({
+      title: `All ${total} already running`,
+      message: `Restart ${joinNames(names)}?`,
+      primaryAction: { title: "Restart All" },
+    });
+  }
+  const remainingPhrase =
+    remainingCount === 1 ? "the other one" : `the other ${remainingCount}`;
+  return await confirmAlert({
+    title: `${running} of ${total} already running`,
+    message: `Restart ${joinNames(names)}, then start ${remainingPhrase}?`,
+    primaryAction: { title: "Restart & Start All" },
+  });
+}
+
+// Spawn phase state machine. The dashboard transitions:
+//   idle      → no launchContext.spawn, normal dashboard
+//   pending   → spawn request received, waiting for first fetchServers
+//   confirming→ showing confirms (multi-folder and/or batch restart)
+//   spawning  → toast visible, kill+spawn done, watching for servers
+//   done      → terminal state (either success-hidden, timeout-hidden,
+//               or user-cancelled)
+type SpawnPhase =
+  | { phase: "idle" }
+  | { phase: "pending" }
+  | { phase: "confirming" }
+  | {
+      phase: "spawning";
+      expecting: Map<string, string>;
+      autoOpen: boolean;
+    }
+  | { phase: "done" };
+
+export default function Command(
+  props: LaunchProps<{ launchContext?: DashboardLaunchContext }>,
+) {
   const prefs = getPreferenceValues<Preferences.Index>();
+  // Capture launchContext once at mount. The destructured props are new
+  // identities every render, so reading via a ref keeps every effect's
+  // closure stable.
+  const launchContextRef = useRef(props.launchContext);
+  const spawnRequest = launchContextRef.current?.spawn;
 
   const {
     isLoading,
@@ -380,16 +441,217 @@ export default function Command() {
     keepPreviousData: true,
   });
 
-  useEffect(() => {
-    const id = setInterval(revalidate, parseInt(prefs.refreshInterval) * 1000);
-    return () => clearInterval(id);
-  }, [prefs.refreshInterval, revalidate]);
-
-  // Mirror `servers` into a ref so async handlers (like restart's polling
-  // loop) can read the latest value without going stale on closure capture.
+  // Mirror `servers` into a ref so async handlers can read the latest
+  // value without going stale on closure capture.
   const serversRef = useRef(servers);
   useEffect(() => {
     serversRef.current = servers;
+  }, [servers]);
+
+  // `hasLoaded` flips true after the very first fetch completes and
+  // never resets. We gate the List's `isLoading` on this so subsequent
+  // background revalidations don't flicker the EmptyView into Raycast's
+  // default "no results" placeholder (the docs explicitly say EmptyView
+  // is hidden whenever isLoading is true with an empty search bar).
+  const [hasLoaded, setHasLoaded] = useState(false);
+  useEffect(() => {
+    if (!isLoading) setHasLoaded(true);
+  }, [isLoading]);
+  const effectiveLoading = !hasLoaded && isLoading;
+
+  // Spawn phase state machine — see SpawnPhase type for the transitions.
+  const [spawnState, setSpawnState] = useState<SpawnPhase>(() =>
+    spawnRequest ? { phase: "pending" } : { phase: "idle" },
+  );
+  const toastRef = useRef<Toast | null>(null);
+
+  // Dashboard polling cadence. Faster while a spawn is in flight, so the
+  // new server appears in the list within ~1s of binding rather than
+  // waiting for the user's full refresh interval.
+  useEffect(() => {
+    const fastPhases: SpawnPhase["phase"][] = [
+      "pending",
+      "confirming",
+      "spawning",
+    ];
+    const ms = fastPhases.includes(spawnState.phase)
+      ? 1000
+      : parseInt(prefs.refreshInterval) * 1000;
+    const id = setInterval(revalidate, ms);
+    return () => clearInterval(id);
+  }, [spawnState.phase, prefs.refreshInterval, revalidate]);
+
+  // Spawn flow: pending → confirming → spawning (or → done on cancel).
+  // Fires once the initial fetch has completed (hasLoaded) so confirms
+  // can be based on the actual current set of running servers.
+  const spawnFlowFired = useRef(false);
+  useEffect(() => {
+    if (spawnFlowFired.current) return;
+    if (spawnState.phase !== "pending") return;
+    if (!hasLoaded) return;
+    spawnFlowFired.current = true;
+
+    void (async () => {
+      const spawn = launchContextRef.current?.spawn;
+      if (!spawn) {
+        setSpawnState({ phase: "done" });
+        return;
+      }
+
+      setSpawnState({ phase: "confirming" });
+
+      // Snapshot current running servers for the confirm logic.
+      const running = new Map(serversRef.current.map((s) => [s.cwd, s]));
+
+      // 1. Multi-folder confirmation (only when N>1 and the pref is on).
+      if (spawn.targets.length > 1 && spawn.confirmMulti) {
+        const ok = await confirmAlert({
+          title: `Start ${spawn.targets.length} dev servers?`,
+          message: spawn.targets.map((t) => t.name).join(", "),
+          primaryAction: { title: "Start All" },
+        });
+        if (!ok) {
+          setSpawnState({ phase: "done" });
+          return;
+        }
+      }
+
+      // 2. Batch restart confirmation — one alert for any number of
+      //    already-running targets.
+      const runningTargets = spawn.targets
+        .map((t) => ({ target: t, existing: running.get(t.cwd) }))
+        .filter(
+          (
+            x,
+          ): x is {
+            target: { cwd: string; name: string };
+            existing: DevServer;
+          } => !!x.existing,
+        );
+      const proceed = await confirmRestartBatch(
+        runningTargets,
+        spawn.targets.length,
+      );
+      if (!proceed) {
+        setSpawnState({ phase: "done" });
+        return;
+      }
+
+      // 3. Show the "Starting…" toast before doing the kill+spawn work
+      //    so the user has feedback the moment they confirm.
+      const label =
+        spawn.targets.length === 1
+          ? spawn.targets[0].name
+          : `${spawn.targets.length} dev servers`;
+      const toast = await showToast({
+        style: Toast.Style.Animated,
+        title: `Starting ${label}…`,
+        primaryAction: spawn.showAutoOpenHint
+          ? {
+              title: "Auto-open in Browser?",
+              onAction: async (t) => {
+                await openExtensionPreferences();
+                await t.hide();
+              },
+            }
+          : undefined,
+      });
+      toastRef.current = toast;
+
+      // 4. Kill running PIDs first so they release their ports before
+      //    we spawn replacements. Parallelized — independent processes.
+      await Promise.all(
+        runningTargets.map((rt) => killServer(rt.existing.pid)),
+      );
+
+      // 5. Spawn every approved target in parallel. The spawn itself
+      //    returns immediately (detached process), so this is fast.
+      await Promise.all(
+        spawn.targets.map(async (t) => {
+          try {
+            await startDevServer(t.cwd);
+            await recordSeen({
+              cwd: t.cwd,
+              projectName: t.name,
+              projectKey: t.cwd,
+            });
+          } catch (err) {
+            await showFailureToast(err, {
+              title: `Failed to start ${t.name}`,
+            });
+          }
+        }),
+      );
+
+      // 6. Transition to spawning. The watch effect below takes over,
+      //    flipping the toast to Success once every cwd appears in the
+      //    servers state (driven by the normal polling, now at 1s).
+      setSpawnState({
+        phase: "spawning",
+        expecting: new Map(spawn.targets.map((t) => [t.cwd, t.name])),
+        autoOpen: spawn.autoOpen,
+      });
+    })();
+  }, [spawnState.phase, hasLoaded]);
+
+  // Watch for every expected cwd to show up in the servers state.
+  // Drives the toast to Success and auto-hides after a brief beat.
+  useEffect(() => {
+    if (spawnState.phase !== "spawning") return;
+    const expecting = spawnState.expecting;
+    const remaining = new Map(expecting);
+    for (const s of servers) {
+      if (remaining.has(s.cwd)) remaining.delete(s.cwd);
+    }
+    if (remaining.size > 0) return;
+
+    // All expected servers detected.
+    if (spawnState.autoOpen) {
+      for (const cwd of expecting.keys()) {
+        const s = servers.find((x) => x.cwd === cwd);
+        if (s) open(s.url).catch(() => {});
+      }
+    }
+    const toast = toastRef.current;
+    if (toast) {
+      toast.style = Toast.Style.Success;
+      toast.title =
+        expecting.size === 1
+          ? `${[...expecting.values()][0]} is running`
+          : `${expecting.size} dev servers running`;
+      setTimeout(() => {
+        toast.hide().catch(() => {});
+      }, 2500);
+    }
+    setSpawnState({ phase: "done" });
+  }, [servers, spawnState]);
+
+  // Hard 15s timeout — if we can't detect every expected server in that
+  // window, hide the toast silently. The dashboard list is the source of
+  // truth for what actually came up; we don't escalate to a Failure tag.
+  useEffect(() => {
+    if (spawnState.phase !== "spawning") return;
+    const timer = setTimeout(() => {
+      toastRef.current?.hide().catch(() => {});
+      setSpawnState({ phase: "done" });
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [spawnState.phase]);
+
+  // Every observed server feeds the recents store, so the Start Recent
+  // Dev Server picker has an up-to-date list of projects without the user
+  // having to bookmark anything explicitly. Dedup by cwd within a single
+  // tick so multi-server projects don't write themselves multiple times.
+  useEffect(() => {
+    if (servers.length === 0) return;
+    const byCwd = new Map<string, ReturnType<typeof toRecent>>();
+    for (const s of servers) {
+      if (!byCwd.has(s.cwd)) byCwd.set(s.cwd, toRecent(s));
+    }
+    recordSeenBatch([...byCwd.values()]).catch(() => {
+      // Recents are a best-effort enhancement; a write failure must not
+      // disrupt the dashboard, so swallow.
+    });
   }, [servers]);
 
   async function kill(pid: number) {
@@ -502,7 +764,7 @@ export default function Command() {
       } else {
         toast.style = Toast.Style.Failure;
         toast.title = "Restart timed out";
-        toast.message = `Check ${path.join(os.tmpdir(), "dev-servers-restart-*.log")}`;
+        toast.message = `Check ${path.join(os.tmpdir(), "dev-servers-spawn-*.log")}`;
       }
     } catch (err) {
       await showFailureToast(err, {
@@ -567,7 +829,7 @@ export default function Command() {
 
   return (
     <List
-      isLoading={isLoading}
+      isLoading={effectiveLoading}
       searchBarPlaceholder="Filter servers..."
       searchBarAccessory={
         availableTools.length > 1 ? (
@@ -590,7 +852,7 @@ export default function Command() {
         ) : undefined
       }
     >
-      {servers.length === 0 && !isLoading && (
+      {servers.length === 0 && !effectiveLoading && (
         <List.EmptyView
           title="No Dev Servers Running"
           description={`Start a dev server and it will appear here.\nRefreshing every ${prefs.refreshInterval}s.`}
