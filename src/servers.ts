@@ -294,6 +294,11 @@ export async function fetchServers(): Promise<DevServer[]> {
   return servers;
 }
 
+// User-initiated kill: SIGTERM (the default signal), graceful — the
+// dev server gets a chance to flush logs, close connections, etc. Use
+// this from the dashboard's Kill / Kill All flows. Pair with `killServer`
+// below when you need an *immediate* port release (e.g. restart).
+//
 // Async-shaped so callers can pass the returned promise to Raycast's
 // `mutate(fn, { optimisticUpdate })` flow. `process.kill` itself is sync.
 export async function killProcess(pid: number): Promise<void> {
@@ -415,8 +420,8 @@ function cwdSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "root";
 }
 
-// Spawn a dev server for a project. Shared by both the Start Dev Server
-// command and the restart flow.
+// Spawn a dev server for a project. Shared by the Start Dev Server flow
+// in the dashboard and by `restartServer` below.
 //
 // Implementation notes:
 // - We launch via `/bin/zsh -ilc` so the user's PATH is loaded. `-l` reads
@@ -428,16 +433,12 @@ function cwdSlug(cwd: string): string {
 // - `detached: true` + `unref()` lets the spawned process outlive the
 //   extension command's lifetime.
 // - The log filename is keyed by a slug of cwd so it stays meaningful after
-//   the PID has been replaced by the new server.
+//   the PID has been replaced by the new server. Use `spawnLogPath(cwd)`
+//   to reach it from error toasts.
 //
-// Throws if pickDevScript can't find a runnable script. Returns the picked
-// script name and detected package manager so callers can surface them in
-// success messages.
-export async function startDevServer(
-  cwd: string,
-  scriptName?: string,
-): Promise<{ pm: PackageManager; script: string }> {
-  const script = scriptName ?? pickDevScript(cwd);
+// Throws if pickDevScript can't find a runnable script.
+export async function startDevServer(cwd: string): Promise<void> {
+  const script = pickDevScript(cwd);
   if (!script) {
     throw new Error(
       "No dev script found in package.json. Expected one of: dev, start, develop, or a script that invokes a known dev-server tool.",
@@ -446,18 +447,13 @@ export async function startDevServer(
   const pm = detectPackageManager(cwd);
   const [cmd, baseArgs] = PM_RUN[pm];
   const args = [...baseArgs, script];
-  const logPath = path.join(
-    os.tmpdir(),
-    `dev-servers-spawn-${cwdSlug(cwd)}.log`,
-  );
-  const out = fs.openSync(logPath, "a");
+  const out = fs.openSync(spawnLogPath(cwd), "a");
   const child = spawn("/bin/zsh", ["-ilc", `exec ${cmd} ${args.join(" ")}`], {
     cwd,
     detached: true,
     stdio: ["ignore", out, out],
   });
   child.unref();
-  return { pm, script };
 }
 
 // Path of the spawn log for a given cwd. Useful for error toasts that point
@@ -466,11 +462,11 @@ export function spawnLogPath(cwd: string): string {
   return path.join(os.tmpdir(), `dev-servers-spawn-${cwdSlug(cwd)}.log`);
 }
 
-// SIGKILL the given PID and wait until it actually exits, with a 500ms
-// upper bound. SIGKILL (vs default SIGTERM) so the listener releases the
-// port immediately — no graceful-shutdown window where a new spawn could
-// race the old process. Polling process.kill(pid, 0) until ESRCH
-// confirms the exit before we hand control back to the caller.
+// Restart pre-spawn kill: SIGKILL + wait-for-exit. Unlike `killProcess`
+// above, this is *not* graceful — the spawn flow needs the listener to
+// release its port immediately so the new server can bind it without
+// racing. Polling `process.kill(pid, 0)` until ESRCH (max 500ms)
+// confirms exit before we return.
 //
 // Best-effort: any error along the way is swallowed. If the kernel
 // refuses to signal the process or it dies between snapshots, the next

@@ -23,12 +23,8 @@ import {
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  RecentProject,
-  recordSeenBatch,
-  removeRecent as removeRecentStore,
-} from "./recents";
-import { fetchServers, findProjectRoot } from "./servers";
+import { RecentProject, recordSeenBatch } from "./recents";
+import { canonicalCwd, fetchServers, findProjectRoot } from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
 
@@ -197,7 +193,7 @@ interface RowProps {
   framework?: string;
   terminalApp: Application;
   autoOpen: boolean;
-  onChange: () => Promise<void>;
+  onRemove: (cwd: string) => Promise<void>;
 }
 
 function RecentRow({
@@ -205,7 +201,7 @@ function RecentRow({
   framework,
   terminalApp,
   autoOpen,
-  onChange,
+  onRemove,
 }: RowProps) {
   async function start() {
     await launchSpawn([{ cwd: recent.cwd, name: recent.projectName }], {
@@ -225,8 +221,7 @@ function RecentRow({
       },
     });
     if (!ok) return;
-    await removeRecentStore(recent.cwd);
-    await onChange();
+    await onRemove(recent.cwd);
   }
 
   const tool = framework;
@@ -325,11 +320,11 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
     isLoading: isLoadingRecents,
     setValue: setRecents,
   } = useLocalStorage<RecentProject[]>(STORAGE_KEY, []);
-  const {
-    data: running = [],
-    isLoading: isLoadingRunning,
-    revalidate: revalidateRunning,
-  } = useCachedPromise(fetchServers, [], { keepPreviousData: true });
+  const { data: running = [], isLoading: isLoadingRunning } = useCachedPromise(
+    fetchServers,
+    [],
+    { keepPreviousData: true },
+  );
 
   const runningByCwd = useMemo(() => {
     const m = new Map<string, DevServer>();
@@ -359,9 +354,14 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }, [recents, runningByCwd]);
 
-  async function refresh() {
-    await setRecents([...(recents ?? [])]);
-    await revalidateRunning();
+  // Drive deletion through useLocalStorage's setValue so the hook is the
+  // only writer. Earlier versions wrote directly to LocalStorage and then
+  // called setValue([...recents]) to force a re-render — but useLocalStorage
+  // doesn't re-read storage on setValue, so that pattern could overwrite
+  // the deletion with the in-memory (pre-delete) value.
+  async function handleRemove(targetCwd: string) {
+    const target = canonicalCwd(targetCwd);
+    await setRecents((recents ?? []).filter((r) => r.cwd !== target));
   }
 
   const isLoading = isLoadingRecents || isLoadingRunning;
@@ -397,7 +397,7 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
               framework={frameworkByCwd.get(r.cwd)}
               terminalApp={terminalApp}
               autoOpen={autoOpen}
-              onChange={refresh}
+              onRemove={handleRemove}
             />
           ))}
         </List.Section>

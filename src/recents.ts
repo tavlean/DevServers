@@ -6,9 +6,8 @@ const STORAGE_KEY = "recent-projects";
 const MAX_RECENTS = 30;
 
 export interface RecentProject {
-  cwd: string;
+  cwd: string; // canonical path (realpath-resolved)
   projectName: string;
-  projectKey: string; // for joining against running servers
   branch?: string;
   // Cached favicon data URI, populated by the dashboard whenever it
   // successfully resolves one for a running server. Lets the picker
@@ -40,18 +39,11 @@ async function writeAll(recents: RecentProject[]): Promise<void> {
   await LocalStorage.setItem(STORAGE_KEY, JSON.stringify(recents));
 }
 
-export async function getRecents(): Promise<RecentProject[]> {
-  const recents = await readAll();
-  recents.sort((a, b) => b.lastSeen - a.lastSeen);
-  return recents;
-}
-
 // Convenience: project payload for recordSeen from a running DevServer.
 export function toRecent(s: DevServer): Omit<RecentProject, "lastSeen"> {
   return {
     cwd: s.cwd,
     projectName: s.projectName,
-    projectKey: s.projectKey,
     branch: s.branch,
   };
 }
@@ -97,13 +89,6 @@ export async function recordSeen(
   proj: Omit<RecentProject, "lastSeen">,
 ): Promise<void> {
   await recordSeenBatch([proj]);
-}
-
-export async function removeRecent(cwd: string): Promise<void> {
-  const target = canonicalCwd(cwd);
-  const recents = await readAll();
-  const filtered = recents.filter((r) => canonicalCwd(r.cwd) !== target);
-  await writeAll(filtered);
 }
 
 // Attach a favicon to the recent entry matching the given cwd, no-op if

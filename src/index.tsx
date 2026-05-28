@@ -16,8 +16,6 @@ import {
   showToast,
 } from "@raycast/api";
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
-import * as os from "node:os";
-import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   recordSeen,
@@ -30,6 +28,7 @@ import {
   killProcess,
   killServer,
   restartServer,
+  spawnLogPath,
   startDevServer,
 } from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
@@ -573,7 +572,6 @@ export default function Command(
             await recordSeen({
               cwd: t.cwd,
               projectName: t.name,
-              projectKey: t.cwd,
             });
           } catch (err) {
             await showFailureToast(err, {
@@ -764,7 +762,7 @@ export default function Command(
       } else {
         toast.style = Toast.Style.Failure;
         toast.title = "Restart timed out";
-        toast.message = `Check ${path.join(os.tmpdir(), "dev-servers-spawn-*.log")}`;
+        toast.message = `Check ${spawnLogPath(server.cwd)}`;
       }
     } catch (err) {
       await showFailureToast(err, {
