@@ -12,6 +12,7 @@ Adds a `Start Dev Server` command for spinning up dev servers without leaving Ra
 - **From the dashboard**: the empty state offers a primary **Start Dev Server** action (just press `↵` from a fresh dashboard to land in the picker). Each running-server row's action panel also carries `Start Dev Server` (`⌘N`), so spinning up another project never requires bouncing back to root search.
 - Each picker row shows last-seen, git branch when applicable, and a framework tag inferred from `package.json` dependencies. Cached favicons appear inline once the dashboard has seen the project running — so even stopped projects keep their real icon. Per-row actions: Start, Open in Terminal (`⌘T`), Show in Finder (`⌘⇧F`), Copy Path (`⌘C`), Remove from Recents (`⌃X`).
 - Folders that no longer exist on disk are hidden this render but kept in storage so they reappear when (for example) an external drive remounts.
+- **Startup logs**: every spawned server's stdout+stderr is captured to a per-project log. If a server doesn't bind a port within 15s, the toast escalates to a failure with a **View Startup Log** action instead of silently disappearing — so a misconfigured or custom setup (e.g. portless needing sudo, a missing binary, a crashing build) is diagnosable from inside Raycast. Every running-server row also carries a **View Startup Log** action (`⌘L`) for inspecting output on demand.
 
 ### Behavior
 

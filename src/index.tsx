@@ -4,6 +4,7 @@ import {
   Alert,
   Application,
   Color,
+  Detail,
   Icon,
   Image,
   LaunchProps,
@@ -16,8 +17,10 @@ import {
   open,
   openExtensionPreferences,
   showToast,
+  useNavigation,
 } from "@raycast/api";
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
+import * as fs from "node:fs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   recordSeen,
@@ -151,6 +154,65 @@ async function detectFaviconUrl(port: string): Promise<string | undefined> {
   return fetchFaviconDataUri(`${origin}/favicon.ico`);
 }
 
+// On-demand view of a project's startup log. When a dev server fails to
+// bind a port, the failure detail is in the spawn log (stdout+stderr) that
+// `startDevServer` redirects to `spawnLogPath(cwd)` — not in any terminal
+// the user can see. This surfaces that file so a misconfigured or custom
+// setup (portless needing sudo, a missing binary, a crashing build) is
+// diagnosable from inside Raycast instead of failing opaquely.
+//
+// Reached on demand only: from a per-row action, and from the "View
+// Startup Log" action on the failure toast when a spawn isn't detected.
+function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
+  const logPath = spawnLogPath(cwd);
+  const { data, isLoading, revalidate } = useCachedPromise(
+    async (p: string): Promise<string> => {
+      try {
+        return await fs.promises.readFile(p, "utf8");
+      } catch {
+        return "";
+      }
+    },
+    [logPath],
+  );
+
+  const log = (data ?? "").trim();
+  const exists = fs.existsSync(logPath);
+  const body = log
+    ? "```\n" + log + "\n```"
+    : exists
+      ? "_The log file exists but is empty — the process wrote no output before exiting._"
+      : "_No startup log found. This server may have been started outside Dev Servers, so we never captured its output._";
+  const markdown = `# Startup log — ${name}\n\n${body}\n\n---\n\n\`${logPath}\``;
+
+  return (
+    <Detail
+      isLoading={isLoading}
+      markdown={markdown}
+      navigationTitle={`Startup log — ${name}`}
+      actions={
+        <ActionPanel>
+          <Action
+            title="Refresh"
+            icon={Icon.ArrowClockwise}
+            onAction={revalidate}
+            shortcut={{ modifiers: ["cmd"], key: "r" }}
+          />
+          {log && <Action.CopyToClipboard title="Copy Log" content={log} />}
+          {exists && (
+            <Action.Open
+              title="Open Log File"
+              target={logPath}
+              icon={Icon.BlankDocument}
+            />
+          )}
+          {exists && <Action.ShowInFinder path={logPath} />}
+        </ActionPanel>
+      }
+    />
+  );
+}
+
 interface RowVisibility {
   branch: boolean;
   uptime: boolean;
@@ -179,6 +241,7 @@ function ServerItem({
   onRestart,
   onRefresh,
 }: ServerItemProps) {
+  const { push } = useNavigation();
   // Cache the favicon URL by port. Survives revalidations and command
   // relaunches, so the icon doesn't flash back to a placeholder every
   // refresh interval. keepPreviousData keeps the prior URL visible while
@@ -338,6 +401,16 @@ function ServerItem({
               onAction={openStartCommand}
             />
             <Action
+              title="View Startup Log"
+              icon={Icon.Terminal}
+              shortcut={{ modifiers: ["cmd"], key: "l" }}
+              onAction={() =>
+                push(
+                  <SpawnLogView cwd={server.cwd} name={server.projectName} />,
+                )
+              }
+            />
+            <Action
               title="Refresh"
               icon={Icon.ArrowClockwise}
               shortcut={{ modifiers: ["cmd"], key: "r" }}
@@ -458,6 +531,7 @@ export default function Command(
   props: LaunchProps<{ launchContext?: DashboardLaunchContext }>,
 ) {
   const prefs = getPreferenceValues<Preferences.Index>();
+  const { push } = useNavigation();
   // Capture launchContext once at mount. The destructured props are new
   // identities every render, so reading via a ref keeps every effect's
   // closure stable.
@@ -675,13 +749,45 @@ export default function Command(
     setSpawnState({ phase: "done" });
   }, [servers, spawnState]);
 
-  // Hard 15s timeout — if we can't detect every expected server in that
-  // window, hide the toast silently. The dashboard list is the source of
-  // truth for what actually came up; we don't escalate to a Failure tag.
+  // Hard 15s timeout. If some expected servers still haven't bound a port,
+  // escalate the toast to a Failure that offers the startup log — that's
+  // where the reason lives (e.g. portless needing sudo, a missing binary,
+  // a crashing build). A server that exits before binding is otherwise
+  // indistinguishable from one still booting, so without this the toast
+  // would just vanish and the user would have no thread to pull on.
+  //
+  // Wording stays soft ("not detected yet") because a genuinely slow build
+  // can exceed 15s; we assert "not seen", not "failed forever". `servers`
+  // is read from the ref so we compare against the latest poll, not the
+  // stale snapshot this effect closed over.
   useEffect(() => {
     if (spawnState.phase !== "spawning") return;
+    const expecting = spawnState.expecting;
     const timer = setTimeout(() => {
-      toastRef.current?.hide().catch(() => {});
+      const present = new Set(serversRef.current.map((s) => s.cwd));
+      const missing = [...expecting.entries()].filter(
+        ([cwd]) => !present.has(cwd),
+      );
+      const toast = toastRef.current;
+      if (toast && missing.length > 0) {
+        const names = joinNames(missing.map(([, name]) => name));
+        toast.style = Toast.Style.Failure;
+        toast.title =
+          missing.length === 1
+            ? `${names} hasn't started yet`
+            : `${names} haven't started yet`;
+        toast.message = "Not detected after 15s — check the startup log.";
+        const [firstCwd, firstName] = missing[0];
+        toast.primaryAction = {
+          title: "View Startup Log",
+          onAction: (t) => {
+            t.hide().catch(() => {});
+            push(<SpawnLogView cwd={firstCwd} name={firstName} />);
+          },
+        };
+      } else {
+        toast?.hide().catch(() => {});
+      }
       setSpawnState({ phase: "done" });
     }, 15000);
     return () => clearTimeout(timer);
