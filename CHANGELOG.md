@@ -27,7 +27,13 @@ Adds a `Start Dev Server` command for spinning up dev servers without leaving Ra
 - Spawn lifecycle is a clean state machine on the dashboard: `idle → pending → confirming → spawning → done`. The "Starting…" toast lives on the dashboard so it's visible the whole time the user is waiting, and transitions to a green "running" state the moment every expected cwd appears in the polling loop.
 - All filesystem paths flow through `canonicalCwd` (a `realpathSync` wrapper) so symlinked project paths compare equal between Finder selections, the recents store, and `lsof`'s view of running processes.
 - Extracted `startDevServer(cwd)` and `killServer(pid)` so the new command and the existing restart flow share one spawn path. Restart is now `killServer + startDevServer`.
+- The spawn passes the package manager and chosen script as separate arguments rather than building a shell string, so projects with unusual script names (spaces, punctuation) start reliably and the launch surface stays free of shell-interpolation surprises.
 - Shared `tool-display.ts` so the framework tag styling stays consistent across the dashboard and the picker.
+- Favicons cached onto recents for stopped-project icons are size-capped, keeping the recents store small; the live dashboard always renders the real favicon regardless.
+
+### Preferences
+
+- **Terminal App** is now a single shared preference that applies to both **Dev Servers** and **Start Dev Server** — set the terminal `⌘T` opens once, and both commands honor it.
 
 ## [Portless & Shortcuts] - 2026-05-26
 
