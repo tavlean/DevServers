@@ -54,6 +54,19 @@ async function openStartCommand(): Promise<void> {
   }
 }
 
+// Shallow equality on the dashboard's view of the server list: same
+// length, and same pid+port in the same positions. ps returns processes
+// in PID order which is stable for the same processes between polls, so
+// position-wise comparison is enough — anything we actually care about
+// changing (a server starting or dying) shows up here.
+function sameServers(a: DevServer[], b: DevServer[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].pid !== b[i].pid || a[i].port !== b[i].port) return false;
+  }
+  return true;
+}
+
 // Strip scheme and trailing slash so a primary URL renders cleanly as the row
 // title: "https://myapp.localhost/" → "myapp.localhost",
 // "http://localhost:4321" → "localhost:4321".
@@ -451,12 +464,30 @@ export default function Command(
   const launchContextRef = useRef(props.launchContext);
   const spawnRequest = launchContextRef.current?.spawn;
 
+  // Dedupe `servers` references when content is unchanged. Without this,
+  // every poll (every 1s while expecting servers) hands React a new array
+  // identity, triggering downstream effects/memos to re-evaluate even
+  // when nothing actually changed. Raycast's dev runtime detects this as
+  // "rendering a lot without any changes" and warns — and it's wasted
+  // work regardless of the warning. Returning the previous reference
+  // when pid+port content matches lets React's Object.is bail out of
+  // the re-render entirely.
+  const fetchStableServers = useMemo(() => {
+    let last: DevServer[] = [];
+    return async (): Promise<DevServer[]> => {
+      const next = await fetchServers();
+      if (sameServers(next, last)) return last;
+      last = next;
+      return next;
+    };
+  }, []);
+
   const {
     isLoading,
     data: servers = [],
     mutate,
     revalidate,
-  } = useCachedPromise(fetchServers, [], {
+  } = useCachedPromise(fetchStableServers, [], {
     keepPreviousData: true,
   });
 
