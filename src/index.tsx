@@ -7,10 +7,12 @@ import {
   Icon,
   Image,
   LaunchProps,
+  LaunchType,
   List,
   Toast,
   confirmAlert,
   getPreferenceValues,
+  launchCommand,
   open,
   openExtensionPreferences,
   showToast,
@@ -39,6 +41,18 @@ const DEFAULT_TERMINAL: Application = {
   path: "/System/Applications/Utilities/Terminal.app",
   bundleId: "com.apple.Terminal",
 };
+
+// Hand off to the Start Dev Server command. Used by the empty-state
+// primary action and by the per-row "Start Dev Server" action, so both
+// surfaces lead to the same picker (recents + Choose Folder) without
+// the user having to bounce back to root search.
+async function openStartCommand(): Promise<void> {
+  try {
+    await launchCommand({ name: "start", type: LaunchType.UserInitiated });
+  } catch (err) {
+    await showFailureToast(err, { title: "Couldn't open Start Dev Server" });
+  }
+}
 
 // Strip scheme and trailing slash so a primary URL renders cleanly as the row
 // title: "https://myapp.localhost/" → "myapp.localhost",
@@ -303,6 +317,12 @@ function ServerItem({
             <Action.ShowInFinder
               path={server.cwd}
               shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+            />
+            <Action
+              title="Start Dev Server"
+              icon={Icon.Play}
+              shortcut={{ modifiers: ["cmd"], key: "n" }}
+              onAction={openStartCommand}
             />
             <Action
               title="Refresh"
@@ -853,9 +873,14 @@ export default function Command(
       {servers.length === 0 && !effectiveLoading && (
         <List.EmptyView
           title="No Dev Servers Running"
-          description={`Start a dev server and it will appear here.\nRefreshing every ${prefs.refreshInterval}s.`}
+          description={`Refreshing every ${prefs.refreshInterval}s.`}
           actions={
             <ActionPanel>
+              <Action
+                title="Start Dev Server"
+                icon={Icon.Play}
+                onAction={openStartCommand}
+              />
               <Action
                 title="Refresh"
                 icon={Icon.ArrowClockwise}
