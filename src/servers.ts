@@ -430,6 +430,10 @@ function cwdSlug(cwd: string): string {
 //   GUI-app PATH is otherwise too minimal to find these tools.
 // - `cwd` is passed as a spawn option (NOT shell-concatenated) so the path
 //   never goes through the shell, removing one injection surface.
+// - The package manager, `run`, and the script name are passed as positional
+//   args (`$0`/`$@`) rather than interpolated into the command string. zsh
+//   re-quotes them, so a script key containing spaces or shell metacharacters
+//   can't break or inject — it's just run verbatim.
 // - `detached: true` + `unref()` lets the spawned process outlive the
 //   extension command's lifetime.
 // - The log filename is keyed by a slug of cwd so it stays meaningful after
@@ -448,7 +452,7 @@ export async function startDevServer(cwd: string): Promise<void> {
   const [cmd, baseArgs] = PM_RUN[pm];
   const args = [...baseArgs, script];
   const out = fs.openSync(spawnLogPath(cwd), "a");
-  const child = spawn("/bin/zsh", ["-ilc", `exec ${cmd} ${args.join(" ")}`], {
+  const child = spawn("/bin/zsh", ["-ilc", 'exec "$0" "$@"', cmd, ...args], {
     cwd,
     detached: true,
     stdio: ["ignore", out, out],
