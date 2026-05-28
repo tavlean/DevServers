@@ -2,8 +2,15 @@ import { LocalStorage } from "@raycast/api";
 import { canonicalCwd } from "./servers";
 import { DevServer } from "./types";
 
-const STORAGE_KEY = "recent-projects";
+export const STORAGE_KEY = "recent-projects";
 const MAX_RECENTS = 30;
+
+// Cap on the size of a favicon data URI we persist onto a recent entry.
+// The live dashboard always renders the real favicon regardless; this only
+// bounds what we cache for the picker's stopped-project icons, so a handful
+// of fat multi-resolution .ico files can't bloat LocalStorage. Anything over
+// the cap falls back to the framework-tinted folder in the picker.
+const MAX_FAVICON_BYTES = 24 * 1024;
 
 export interface RecentProject {
   cwd: string; // canonical path (realpath-resolved)
@@ -99,6 +106,11 @@ export async function updateRecentFavicon(
   cwd: string,
   favicon: string,
 ): Promise<void> {
+  // Don't persist oversized favicons — they'd accumulate across up to
+  // MAX_RECENTS entries and bloat LocalStorage for a purely cosmetic icon.
+  // The dashboard still shows the real favicon live; the picker just falls
+  // back to the framework-tinted folder for this project when stopped.
+  if (favicon.length > MAX_FAVICON_BYTES) return;
   const target = canonicalCwd(cwd);
   const recents = await readAll();
   let changed = false;
