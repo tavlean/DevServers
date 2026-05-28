@@ -4,7 +4,6 @@ import {
   Alert,
   Application,
   Color,
-  Form,
   Icon,
   LaunchType,
   List,
@@ -13,20 +12,26 @@ import {
   getPreferenceValues,
   getSelectedFinderItems,
   launchCommand,
-  useNavigation,
 } from "@raycast/api";
+// Note: useNavigation and Form are no longer needed — the Choose
+// Folder flow now opens the native macOS picker directly instead of
+// pushing a Raycast Form view.
 import {
   showFailureToast,
   useCachedPromise,
   useLocalStorage,
 } from "@raycast/utils";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { promisify } from "node:util";
 import { RecentProject, recordSeenBatch } from "./recents";
 import { canonicalCwd, fetchServers, findProjectRoot } from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
+
+const execFileAsync = promisify(execFile);
 
 const DEFAULT_TERMINAL: Application = {
   name: "Terminal",
@@ -140,52 +145,44 @@ async function launchSpawn(
   }
 }
 
-// Pushed onto the nav stack from the picker when the user picks "Choose
-// Folder…", so projects that aren't yet in recents (and aren't in
-// Finder's selection) still have a path into the command.
-function ChooseFolderForm({ autoOpen }: { autoOpen: boolean }) {
-  return (
-    <Form
-      actions={
-        <ActionPanel>
-          <Action.SubmitForm
-            title="Start Dev Server"
-            icon={Icon.Play}
-            onSubmit={async (values: { folders: string[] }) => {
-              const raw = values.folders?.[0];
-              if (!raw) {
-                await showFailureToast(undefined, {
-                  title: "Pick a folder first",
-                });
-                return false;
-              }
-              const target = resolveTarget(raw);
-              if (!target) {
-                await showFailureToast(undefined, {
-                  title: "No package.json found",
-                  message: "That folder isn't inside a Node project.",
-                });
-                return false;
-              }
-              await launchSpawn(
-                [{ cwd: target.cwd, name: target.projectName }],
-                { autoOpen, confirmMulti: false },
-              );
-            }}
-          />
-        </ActionPanel>
-      }
-    >
-      <Form.Description text="Pick a project folder containing a package.json. We'll detect the package manager and start its dev script." />
-      <Form.FilePicker
-        id="folders"
-        title="Project Folder"
-        allowMultipleSelection={false}
-        canChooseDirectories
-        canChooseFiles={false}
-      />
-    </Form>
-  );
+// Open the native macOS folder picker via osascript. Skips the Form +
+// Form.FilePicker round-trip the API would otherwise require — the user
+// gets the OS dialog immediately instead of a Raycast screen they have
+// to click through first. Returns the picked POSIX path, or null when
+// the user cancels (osascript exits non-zero in that case).
+async function pickFolderNative(): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("osascript", [
+      "-e",
+      'POSIX path of (choose folder with prompt "Pick a project folder")',
+    ]);
+    return stdout.trim() || null;
+  } catch {
+    // User canceled or osascript was unavailable — silently no-op.
+    return null;
+  }
+}
+
+// Handler for the picker's "Choose Folder…" action. Opens the native
+// dialog, resolves the pick to a project root, and hands off to the
+// dashboard via launchSpawn.
+async function chooseFolderAndStart(options: {
+  autoOpen: boolean;
+}): Promise<void> {
+  const raw = await pickFolderNative();
+  if (!raw) return;
+  const target = resolveTarget(raw);
+  if (!target) {
+    await showFailureToast(undefined, {
+      title: "No package.json found",
+      message: "That folder isn't inside a Node project.",
+    });
+    return;
+  }
+  await launchSpawn([{ cwd: target.cwd, name: target.projectName }], {
+    autoOpen: options.autoOpen,
+    confirmMulti: false,
+  });
 }
 
 interface RowProps {
@@ -306,8 +303,6 @@ interface PickerProps {
 // dashboard) and an always-present "Choose Folder…" entry for one-off
 // picks.
 function PickerView({ autoOpen, terminalApp }: PickerProps) {
-  const { push } = useNavigation();
-
   // Passive migration: every mount triggers an empty recordSeenBatch
   // which canonicalizes any non-symlink-resolved entries left over from
   // earlier builds, so the running-server filter below matches reliably.
@@ -382,7 +377,7 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
               <Action
                 title="Choose Folder…"
                 icon={Icon.NewFolder}
-                onAction={() => push(<ChooseFolderForm autoOpen={autoOpen} />)}
+                onAction={() => chooseFolderAndStart({ autoOpen })}
               />
             </ActionPanel>
           }
