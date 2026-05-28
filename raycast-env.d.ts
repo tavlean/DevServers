@@ -7,7 +7,10 @@
 
 /* eslint-disable @typescript-eslint/ban-types */
 
-type ExtensionPreferences = {}
+type ExtensionPreferences = {
+  /** Terminal App - Which terminal to open when using "Open in Terminal". Defaults to macOS Terminal if unset. */
+  "terminalApp"?: import("@raycast/api").Application
+}
 
 /** Preferences accessible in all the extension's commands */
 declare type Preferences = ExtensionPreferences
@@ -15,8 +18,6 @@ declare type Preferences = ExtensionPreferences
 declare namespace Preferences {
   /** Preferences accessible in the `index` command */
   export type Index = ExtensionPreferences & {
-  /** Terminal App - Which terminal to open when using "Open in Terminal". Defaults to macOS Terminal if unset. */
-  "terminalApp"?: import("@raycast/api").Application,
   /** Refresh Interval - How often to refresh the server list */
   "refreshInterval": "2" | "5" | "10" | "30",
   /** Project Display - Show the full path instead of the project name */
@@ -32,8 +33,6 @@ declare namespace Preferences {
 }
   /** Preferences accessible in the `start` command */
   export type Start = ExtensionPreferences & {
-  /** Terminal App - Which terminal to open when using "Open in Terminal". Defaults to macOS Terminal if unset. */
-  "terminalApp"?: import("@raycast/api").Application,
   /** After Start - Once the new dev server starts listening, automatically open its URL in your default browser */
   "autoOpenInBrowser": boolean,
   /** Confirmations - Show a confirmation alert before spawning more than one dev server from a multi-folder Finder selection */

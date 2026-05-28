@@ -26,6 +26,15 @@
     "macOS"
   ],
   "license": "MIT",
+  "preferences": [
+    {
+      "name": "terminalApp",
+      "title": "Terminal App",
+      "type": "appPicker",
+      "description": "Which terminal to open when using \"Open in Terminal\". Defaults to macOS Terminal if unset.",
+      "required": false
+    }
+  ],
   "commands": [
     {
       "name": "index",
@@ -33,13 +42,6 @@
       "description": "List and manage running dev servers",
       "mode": "view",
       "preferences": [
-        {
-          "name": "terminalApp",
-          "title": "Terminal App",
-          "type": "appPicker",
-          "description": "Which terminal to open when using \"Open in Terminal\". Defaults to macOS Terminal if unset.",
-          "required": false
-        },
         {
           "name": "refreshInterval",
           "title": "Refresh Interval",
@@ -123,13 +125,6 @@
         "recent"
       ],
       "preferences": [
-        {
-          "name": "terminalApp",
-          "title": "Terminal App",
-          "type": "appPicker",
-          "description": "Which terminal to open when using \"Open in Terminal\". Defaults to macOS Terminal if unset.",
-          "required": false
-        },
         {
           "name": "autoOpenInBrowser",
           "title": "After Start",

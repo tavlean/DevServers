@@ -22,6 +22,7 @@ import {
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
 import * as fs from "node:fs";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_TERMINAL } from "./constants";
 import {
   recordSeen,
   recordSeenBatch,
@@ -39,12 +40,6 @@ import {
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
 
-const DEFAULT_TERMINAL: Application = {
-  name: "Terminal",
-  path: "/System/Applications/Utilities/Terminal.app",
-  bundleId: "com.apple.Terminal",
-};
-
 // Hand off to the Start Dev Server command. Used by the empty-state
 // primary action and by the per-row "Start Dev Server" action, so both
 // surfaces lead to the same picker (recents + Choose Folder) without
@@ -58,14 +53,30 @@ async function openStartCommand(): Promise<void> {
 }
 
 // Shallow equality on the dashboard's view of the server list: same
-// length, and same pid+port in the same positions. ps returns processes
-// in PID order which is stable for the same processes between polls, so
-// position-wise comparison is enough — anything we actually care about
-// changing (a server starting or dying) shows up here.
+// length, and the same user-visible fields in the same positions. ps
+// returns processes in PID order which is stable for the same processes
+// between polls, so position-wise comparison is enough.
+//
+// We compare pid+port AND the fields that can change in place while a PID
+// keeps running: branch (git checkout), and the custom-domain set / primary
+// URL (a portless alias attached or removed live). Comparing only pid+port
+// would let `fetchStableServers` hand back the previous reference and mask
+// those changes — e.g. a freshly-attached `myapp.localhost` would never
+// surface until the server restarted. uptime is excluded on purpose: it's
+// derived from a stable `startedAt`, so it re-renders on its own cadence
+// without forcing a list-identity change every poll.
 function sameServers(a: DevServer[], b: DevServer[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].pid !== b[i].pid || a[i].port !== b[i].port) return false;
+    if (
+      a[i].pid !== b[i].pid ||
+      a[i].port !== b[i].port ||
+      a[i].url !== b[i].url ||
+      a[i].branch !== b[i].branch ||
+      (a[i].customUrls ?? []).join(",") !== (b[i].customUrls ?? []).join(",")
+    ) {
+      return false;
+    }
   }
   return true;
 }

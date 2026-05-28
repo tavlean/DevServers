@@ -26,20 +26,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { promisify } from "node:util";
-import { RecentProject, recordSeenBatch } from "./recents";
+import { DEFAULT_TERMINAL } from "./constants";
+import { RecentProject, STORAGE_KEY, recordSeenBatch } from "./recents";
 import { canonicalCwd, fetchServers, findProjectRoot } from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
 
 const execFileAsync = promisify(execFile);
-
-const DEFAULT_TERMINAL: Application = {
-  name: "Terminal",
-  path: "/System/Applications/Utilities/Terminal.app",
-  bundleId: "com.apple.Terminal",
-};
-
-const STORAGE_KEY = "recent-projects";
 
 // One-time discoverability nudge for the autoOpenInBrowser pref. The
 // Start command pre-decides whether to surface the CTA (so the counter
@@ -49,17 +42,15 @@ const STORAGE_KEY = "recent-projects";
 const AUTO_OPEN_HINT_MAX = 3;
 const AUTO_OPEN_HINT_KEY = "auto-open-hint-shown";
 
-async function shouldShowAutoOpenHint(): Promise<boolean> {
+// Decide whether to surface the one-time "Auto-open in Browser?" CTA and, if
+// so, consume one of its remaining showings — in a single storage read/write
+// rather than a separate should-show check followed by a bump.
+async function maybeConsumeAutoOpenHint(): Promise<boolean> {
   const raw = await LocalStorage.getItem<string>(AUTO_OPEN_HINT_KEY);
   const count = raw ? parseInt(raw, 10) : 0;
-  return Number.isFinite(count) && count < AUTO_OPEN_HINT_MAX;
-}
-
-async function bumpAutoOpenHint(): Promise<void> {
-  const raw = await LocalStorage.getItem<string>(AUTO_OPEN_HINT_KEY);
-  const count = raw ? parseInt(raw, 10) : 0;
-  const next = Number.isFinite(count) ? count + 1 : 1;
-  await LocalStorage.setItem(AUTO_OPEN_HINT_KEY, String(next));
+  if (!Number.isFinite(count) || count >= AUTO_OPEN_HINT_MAX) return false;
+  await LocalStorage.setItem(AUTO_OPEN_HINT_KEY, String(count + 1));
+  return true;
 }
 
 // Best-guess framework for a project, read from package.json dependencies.
@@ -125,8 +116,7 @@ async function launchSpawn(
   options: { autoOpen: boolean; confirmMulti: boolean },
 ): Promise<void> {
   const showAutoOpenHint =
-    !options.autoOpen && (await shouldShowAutoOpenHint());
-  if (showAutoOpenHint) await bumpAutoOpenHint();
+    !options.autoOpen && (await maybeConsumeAutoOpenHint());
   try {
     await launchCommand({
       name: "index",
@@ -327,11 +317,28 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
     return m;
   }, [running]);
 
-  const frameworkByCwd = useMemo(() => {
-    const m = new Map<string, string | undefined>();
-    for (const r of recents ?? []) m.set(r.cwd, guessFramework(r.cwd));
-    return m;
-  }, [recents]);
+  // Framework detection reads each project's package.json from disk. Run it
+  // off the render path (in a cached promise keyed by the recents' cwds)
+  // rather than synchronously in a useMemo, so opening the picker with a
+  // full recents list doesn't block the first paint on up to MAX_RECENTS
+  // synchronous file reads. keepPreviousData holds the tags steady while a
+  // refreshed list resolves.
+  const recentCwds = useMemo(
+    () => (recents ?? []).map((r) => r.cwd),
+    [recents],
+  );
+  const { data: frameworkByCwd } = useCachedPromise(
+    async (cwds: string[]): Promise<Record<string, string>> => {
+      const out: Record<string, string> = {};
+      for (const cwd of cwds) {
+        const fw = guessFramework(cwd);
+        if (fw) out[cwd] = fw;
+      }
+      return out;
+    },
+    [recentCwds],
+    { keepPreviousData: true, initialData: {} },
+  );
 
   // Hide entries that are currently running (the dashboard owns them) or
   // whose folder no longer exists on disk. We keep them in storage so a
@@ -389,7 +396,7 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
             <RecentRow
               key={r.cwd}
               recent={r}
-              framework={frameworkByCwd.get(r.cwd)}
+              framework={frameworkByCwd[r.cwd]}
               terminalApp={terminalApp}
               autoOpen={autoOpen}
               onRemove={handleRemove}
