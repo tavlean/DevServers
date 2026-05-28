@@ -62,7 +62,7 @@ export function toRecent(s: DevServer): Omit<RecentProject, "lastSeen"> {
 // Every write also runs a passive migration: existing entries are
 // re-keyed by their canonical (symlink-resolved) cwd, collapsing
 // duplicates that earlier code paths may have inserted with non-canonical
-// paths. An empty `projects` array is a valid call shape — callers can
+// paths. An empty `projects` array is a valid call shape; callers can
 // use it to force a one-shot migration without recording anything new.
 export async function recordSeenBatch(
   projects: Array<Omit<RecentProject, "lastSeen">>,
@@ -106,7 +106,7 @@ export async function updateRecentFavicon(
   cwd: string,
   favicon: string,
 ): Promise<void> {
-  // Don't persist oversized favicons — they'd accumulate across up to
+  // Don't persist oversized favicons; they'd accumulate across up to
   // MAX_RECENTS entries and bloat LocalStorage for a purely cosmetic icon.
   // The dashboard still shows the real favicon live; the picker just falls
   // back to the framework-tinted folder for this project when stopped.

@@ -61,7 +61,7 @@ async function openStartCommand(): Promise<void> {
 // keeps running: branch (git checkout), and the custom-domain set / primary
 // URL (a portless alias attached or removed live). Comparing only pid+port
 // would let `fetchStableServers` hand back the previous reference and mask
-// those changes — e.g. a freshly-attached `myapp.localhost` would never
+// those changes: e.g. a freshly-attached `myapp.localhost` would never
 // surface until the server restarted. uptime is excluded on purpose: it's
 // derived from a stable `startedAt`, so it re-renders on its own cadence
 // without forcing a list-identity change every poll.
@@ -115,7 +115,7 @@ async function fetchWithTimeout(
 
 // Fetch a favicon and return it as an inline data URI, or undefined if the URL
 // doesn't serve an image. Inlining the bytes (rather than handing Raycast a
-// URL to fetch) sidesteps CORS — some dev servers (notably Astro) don't set
+// URL to fetch) sidesteps CORS, since some dev servers (notably Astro) don't set
 // Access-Control-Allow-Origin on static assets, and Raycast's image loader
 // refuses those.
 //
@@ -167,7 +167,7 @@ async function detectFaviconUrl(port: string): Promise<string | undefined> {
 
 // On-demand view of a project's startup log. When a dev server fails to
 // bind a port, the failure detail is in the spawn log (stdout+stderr) that
-// `startDevServer` redirects to `spawnLogPath(cwd)` — not in any terminal
+// `startDevServer` redirects to `spawnLogPath(cwd)`, not in any terminal
 // the user can see. This surfaces that file so a misconfigured or custom
 // setup (portless needing sudo, a missing binary, a crashing build) is
 // diagnosable from inside Raycast instead of failing opaquely.
@@ -192,15 +192,15 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
   const body = log
     ? "```\n" + log + "\n```"
     : exists
-      ? "_The log file exists but is empty — the process wrote no output before exiting._"
+      ? "_The log file exists but is empty. The process wrote no output before exiting._"
       : "_No startup log found. This server may have been started outside Dev Servers, so we never captured its output._";
-  const markdown = `# Startup log — ${name}\n\n${body}\n\n---\n\n\`${logPath}\``;
+  const markdown = `# Startup log: ${name}\n\n${body}\n\n---\n\n\`${logPath}\``;
 
   return (
     <Detail
       isLoading={isLoading}
       markdown={markdown}
-      navigationTitle={`Startup log — ${name}`}
+      navigationTitle={`Startup log: ${name}`}
       actions={
         <ActionPanel>
           <Action
@@ -292,7 +292,7 @@ function ServerItem({
   // When a custom domain (e.g. via portless) points at this port, promote
   // the domain to the title and demote `localhost:PORT` to a pill accessory.
   // The pill lives in accessories (right-aligned) because Raycast subtitles
-  // are plain text — there's no inline-pill primitive. The port stays
+  // are plain text, with no inline-pill primitive. The port stays
   // visible because it's still useful for env files, OAuth allowlists, CORS
   // rules, and tools that don't trust the local CA.
   const hasAlias = !!server.customUrls?.length;
@@ -324,7 +324,7 @@ function ServerItem({
         ...(localBadgeTag ? [localBadgeTag] : []),
         // Runtime tag is suppressed when it duplicates the tool tag (e.g.
         // tool is already "bun"), and rendered only when the user has the
-        // tool tag visible — otherwise standalone "bun" would look orphaned.
+        // tool tag visible; otherwise standalone "bun" would look orphaned.
         ...(show.tool && server.runtime === "bun" && server.tool !== "bun"
           ? [
               {
@@ -348,18 +348,18 @@ function ServerItem({
         <ActionPanel>
           {/*
            * Action order is deliberate. Raycast auto-binds `↵` and `⌘↵` to
-           * positions 1 and 2 — they can't be overridden — so we keep both
+           * positions 1 and 2 (they can't be overridden), so we keep both
            * slots filled with benign "open" actions.
            *
            * Restart sits above Kill: restarting is the common iterate-on-
            * change action, while Kill is mostly end-of-session cleanup.
            * This also keeps `⌘↵` from auto-firing Kill when there's no
-           * alias — it falls through to Restart (reversible by design).
+           * alias; it falls through to Restart (reversible by design).
            *
            * Kill stays high in the panel rather than at the conventional
            * "destructive at the bottom", because it's frequent and Raycast
            * paints it red as the visual safety signal. The bulk kill
-           * actions further down keep convention — they're genuinely
+           * actions further down keep convention; they're genuinely
            * high-blast-radius.
            */}
           <Action.OpenInBrowser url={server.url} title="Open in Browser" />
@@ -451,8 +451,8 @@ function ServerItem({
 }
 
 // Spawn request handed off by the Start Dev Server command. The dashboard
-// is the controller for the entire spawn flow — confirms, kill+spawn,
-// toast lifecycle, and the eventual transition to a steady-state — so
+// is the controller for the entire spawn flow (confirms, kill+spawn,
+// toast lifecycle, and the eventual transition to a steady-state), so
 // the user sees the dashboard immediately rather than waiting on a blank
 // Start view for the pre-spawn `fetchServers` call.
 interface SpawnRequest {
@@ -553,7 +553,7 @@ export default function Command(
   // every poll (every 1s while expecting servers) hands React a new array
   // identity, triggering downstream effects/memos to re-evaluate even
   // when nothing actually changed. Raycast's dev runtime detects this as
-  // "rendering a lot without any changes" and warns — and it's wasted
+  // "rendering a lot without any changes" and warns, and it's wasted
   // work regardless of the warning. Returning the previous reference
   // when pid+port content matches lets React's Object.is bail out of
   // the re-render entirely.
@@ -594,7 +594,7 @@ export default function Command(
   }, [isLoading]);
   const effectiveLoading = !hasLoaded && isLoading;
 
-  // Spawn phase state machine — see SpawnPhase type for the transitions.
+  // Spawn phase state machine; see SpawnPhase type for the transitions.
   const [spawnState, setSpawnState] = useState<SpawnPhase>(() =>
     spawnRequest ? { phase: "pending" } : { phase: "idle" },
   );
@@ -651,7 +651,7 @@ export default function Command(
         }
       }
 
-      // 2. Batch restart confirmation — one alert for any number of
+      // 2. Batch restart confirmation: one alert for any number of
       //    already-running targets.
       const runningTargets = spawn.targets
         .map((t) => ({ target: t, existing: running.get(t.cwd) }))
@@ -694,7 +694,7 @@ export default function Command(
       toastRef.current = toast;
 
       // 4. Kill running PIDs first so they release their ports before
-      //    we spawn replacements. Parallelized — independent processes.
+      //    we spawn replacements. Parallelized, since they're independent processes.
       await Promise.all(
         runningTargets.map((rt) => killServer(rt.existing.pid)),
       );
@@ -761,7 +761,7 @@ export default function Command(
   }, [servers, spawnState]);
 
   // Hard 15s timeout. If some expected servers still haven't bound a port,
-  // escalate the toast to a Failure that offers the startup log — that's
+  // escalate the toast to a Failure that offers the startup log, since that's
   // where the reason lives (e.g. portless needing sudo, a missing binary,
   // a crashing build). A server that exits before binding is otherwise
   // indistinguishable from one still booting, so without this the toast
@@ -787,7 +787,7 @@ export default function Command(
           missing.length === 1
             ? `${names} hasn't started yet`
             : `${names} haven't started yet`;
-        toast.message = "Not detected after 15s — check the startup log.";
+        toast.message = "Not detected after 15s. Check the startup log.";
         const [firstCwd, firstName] = missing[0];
         toast.primaryAction = {
           title: "View Startup Log",

@@ -192,7 +192,7 @@ function detectTool(command: string, cwd: string): string {
     if (name === "vite" && hasSvelteConfig(cwd)) return "sveltekit";
     return name;
   }
-  // 2. Fall back to the package name from node_modules/<pkg>/ — handles
+  // 2. Fall back to the package name from node_modules/<pkg>/. This handles
   //    `node node_modules/serve/build/main.js` (→ "serve") and scoped
   //    packages like `node_modules/@vitejs/plugin-react/...`.
   const pkg = command.match(/node_modules\/(@[^/]+\/[^/\s]+|[^/\s]+)/);
@@ -235,7 +235,7 @@ export async function fetchServers(): Promise<DevServer[]> {
   ]);
   const candidates = procs.filter(isCandidate);
   const portByPid = lowestPortPerPid(listeners);
-  // Only query cwds for candidates that are actually listening — keeps the
+  // Only query cwds for candidates that are actually listening, which keeps the
   // lsof argument list short and skips dead PIDs.
   const finalPids = candidates
     .map((p) => p.pid)
@@ -243,7 +243,7 @@ export async function fetchServers(): Promise<DevServer[]> {
   const cwdByPid = await listCwds(finalPids);
 
   // Look up git info per unique cwd, in parallel. Worktrees of the same repo
-  // share a git common-dir, so we use that path as the project key — collapses
+  // share a git common-dir, so we use that path as the project key, which collapses
   // sibling worktrees into one group while still letting us show the branch on
   // each row. The project's display name is the basename of the common-dir's
   // parent (the repo root).
@@ -260,7 +260,7 @@ export async function fetchServers(): Promise<DevServer[]> {
     const cwd = cwdByPid.get(proc.pid);
     if (!cwd) continue; // shouldn't happen for live processes, but be safe
     const tool = detectTool(proc.command, cwd);
-    // Drop the portless proxy daemon itself — it's a node process out of
+    // Drop the portless proxy daemon itself. It's a node process out of
     // node_modules/portless/ that binds 80/443/1355, and would otherwise
     // appear as a phantom "dev server" row. Child processes spawned by
     // portless run their own framework binary (next, vite, …) so they
@@ -294,7 +294,7 @@ export async function fetchServers(): Promise<DevServer[]> {
   return servers;
 }
 
-// User-initiated kill: SIGTERM (the default signal), graceful — the
+// User-initiated kill: SIGTERM (the default signal), graceful: the
 // dev server gets a chance to flush logs, close connections, etc. Use
 // this from the dashboard's Kill / Kill All flows. Pair with `killServer`
 // below when you need an *immediate* port release (e.g. restart).
@@ -331,7 +331,7 @@ const PM_RUN: Record<PackageManager, [string, string[]]> = {
 // Heuristic tokens for the script-value fallback in pickDevScript. We match
 // the binary names that frameworks actually invoke in dev mode, with negative
 // lookaheads on the common production subcommands so we don't accidentally
-// pick a `build` or `preview` script. Ordering doesn't matter — first hit
+// pick a `build` or `preview` script. Ordering doesn't matter; first hit
 // wins inside any given script value.
 const DEV_SCRIPT_TOKENS: RegExp[] = [
   /\bvite\b(?!\s+(?:build|preview|optimize))/,
@@ -433,7 +433,7 @@ function cwdSlug(cwd: string): string {
 // - The package manager, `run`, and the script name are passed as positional
 //   args (`$0`/`$@`) rather than interpolated into the command string. zsh
 //   re-quotes them, so a script key containing spaces or shell metacharacters
-//   can't break or inject — it's just run verbatim.
+//   can't break or inject; it's just run verbatim.
 // - `detached: true` + `unref()` lets the spawned process outlive the
 //   extension command's lifetime.
 // - The log filename is keyed by a slug of cwd so it stays meaningful after
@@ -467,15 +467,15 @@ export function spawnLogPath(cwd: string): string {
 }
 
 // Restart pre-spawn kill: SIGKILL + wait-for-exit. Unlike `killProcess`
-// above, this is *not* graceful — the spawn flow needs the listener to
+// above, this is *not* graceful: the spawn flow needs the listener to
 // release its port immediately so the new server can bind it without
 // racing. Polling `process.kill(pid, 0)` until ESRCH (max 500ms)
 // confirms exit before we return.
 //
 // Best-effort: any error along the way is swallowed. If the kernel
 // refuses to signal the process or it dies between snapshots, the next
-// spawn will either succeed cleanly or fail to bind the port — both of
-// which surface their own errors at the right layer.
+// spawn will either succeed cleanly or fail to bind the port, and both
+// surface their own errors at the right layer.
 //
 // Cross-platform: both SIGKILL and signal-0 map cleanly to Windows'
 // TerminateProcess / OpenProcess, so this stays portable.

@@ -13,7 +13,7 @@ import {
   getSelectedFinderItems,
   launchCommand,
 } from "@raycast/api";
-// Note: useNavigation and Form are no longer needed — the Choose
+// Note: useNavigation and Form are no longer needed. The Choose
 // Folder flow now opens the native macOS picker directly instead of
 // pushing a Raycast Form view.
 import {
@@ -43,7 +43,7 @@ const AUTO_OPEN_HINT_MAX = 3;
 const AUTO_OPEN_HINT_KEY = "auto-open-hint-shown";
 
 // Decide whether to surface the one-time "Auto-open in Browser?" CTA and, if
-// so, consume one of its remaining showings — in a single storage read/write
+// so, consume one of its remaining showings, in a single storage read/write
 // rather than a separate should-show check followed by a bump.
 async function maybeConsumeAutoOpenHint(): Promise<boolean> {
   const raw = await LocalStorage.getItem<string>(AUTO_OPEN_HINT_KEY);
@@ -54,7 +54,7 @@ async function maybeConsumeAutoOpenHint(): Promise<boolean> {
 }
 
 // Best-guess framework for a project, read from package.json dependencies.
-// UI tag only — process inspection is still the source of truth for a
+// UI tag only. Process inspection is still the source of truth for a
 // running server.
 function guessFramework(cwd: string): string | undefined {
   try {
@@ -107,7 +107,7 @@ function resolveTarget(rawPath: string): Target | null {
 }
 
 // Hand the spawn request off to the dashboard. The dashboard owns
-// confirms, kill+spawn, and the toast lifecycle — this command only
+// confirms, kill+spawn, and the toast lifecycle; this command only
 // resolves the target list and navigates. Faster perceived flow for
 // the user (dashboard appears immediately instead of waiting on a
 // blank Start view).
@@ -136,7 +136,7 @@ async function launchSpawn(
 }
 
 // Open the native macOS folder picker via osascript. Skips the Form +
-// Form.FilePicker round-trip the API would otherwise require — the user
+// Form.FilePicker round-trip the API would otherwise require. The user
 // gets the OS dialog immediately instead of a Raycast screen they have
 // to click through first. Returns the picked POSIX path, or null when
 // the user cancels (osascript exits non-zero in that case).
@@ -148,7 +148,7 @@ async function pickFolderNative(): Promise<string | null> {
     ]);
     return stdout.trim() || null;
   } catch {
-    // User canceled or osascript was unavailable — silently no-op.
+    // User canceled or osascript was unavailable; silently no-op.
     return null;
   }
 }
@@ -358,7 +358,7 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
 
   // Drive deletion through useLocalStorage's setValue so the hook is the
   // only writer. Earlier versions wrote directly to LocalStorage and then
-  // called setValue([...recents]) to force a re-render — but useLocalStorage
+  // called setValue([...recents]) to force a re-render, but useLocalStorage
   // doesn't re-read storage on setValue, so that pattern could overwrite
   // the deletion with the in-memory (pre-delete) value.
   async function handleRemove(targetCwd: string) {
@@ -464,7 +464,7 @@ export default function Command() {
       }
 
       // Hand off to the dashboard. No fetchServers, no confirms, no
-      // spawn here — the dashboard handles all of it from its own
+      // spawn here; the dashboard handles all of it from its own
       // lifecycle, so the user sees the dashboard within a few hundred
       // ms instead of waiting on this view.
       await launchSpawn(
@@ -479,6 +479,6 @@ export default function Command() {
   }
 
   // Minimal placeholder while we resolve the Finder selection. Just the
-  // loading bar — the dashboard is right behind it.
+  // loading bar; the dashboard is right behind it.
   return <List isLoading={true} searchBarPlaceholder="Starting dev server…" />;
 }
