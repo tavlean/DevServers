@@ -10,6 +10,7 @@ import {
   List,
   LocalStorage,
   confirmAlert,
+  getFrontmostApplication,
   getPreferenceValues,
   getSelectedFinderItems,
   launchCommand,
@@ -417,15 +418,24 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
 //
 //   ┌─ forcePicker (launched from the dashboard's ⌘N / empty state)?
 //   │      ├─ Yes → render the picker directly, skip the Finder probe.
-//   │      └─ No  → ┌─ Finder selection present?
-//   │              │      ├─ Yes → resolve targets, launchCommand to dashboard
-//   │              │      │       with spawn details in launchContext.
-//   │              │      └─ No  → render the picker (recents + "Choose Folder…").
+//   │      └─ No  → ┌─ Is Finder the frontmost app?
+//   │              │      ├─ No  → render the picker (recents + "Choose Folder…").
+//   │              │      └─ Yes → ┌─ Finder selection resolves to a project?
+//   │              │              │      ├─ Yes → launchCommand to dashboard with
+//   │              │              │      │        spawn details in launchContext.
+//   │              │              │      └─ No  → render the picker.
 //
-// forcePicker exists because `getSelectedFinderItems` returns Finder's current
-// selection regardless of what's frontmost. Launched from the dashboard the
-// user is choosing what to start, so a stale Finder selection must not be
-// silently turned into a spawn/restart of whatever happens to be selected.
+// The frontmost-app gate is the key UX safeguard. `getSelectedFinderItems`
+// returns Finder's *persisted* selection regardless of what's actually in
+// focus, so a folder selected an hour ago to start one server would otherwise
+// be silently re-resolved as a target the next time the command runs from,
+// say, the browser — surfacing a baffling "already running, restart?" when the
+// user only meant to open the picker to start a *different* project. Honoring
+// the selection only when Finder is genuinely frontmost matches the user's
+// mental model ("I'm not in Finder, so don't act on its selection") and still
+// preserves the one-keystroke "select in Finder and run" flow. forcePicker is
+// the narrower dashboard-initiated shortcut: there the user is explicitly
+// choosing what to start, so we skip the probe entirely.
 export default function Command(
   props: LaunchProps<{ launchContext?: { forcePicker?: boolean } }>,
 ) {
@@ -448,6 +458,26 @@ export default function Command(
     if (probedRef.current) return;
     probedRef.current = true;
     void (async () => {
+      // Only honor a Finder selection when Finder is the active app. The
+      // selection persists in Finder indefinitely, so without this gate a
+      // stale pick gets silently turned into a spawn target (see the header
+      // comment for the full rationale). If we can't determine the frontmost
+      // app, fall back to the picker rather than risk acting on a stale
+      // selection.
+      try {
+        const frontmost = await getFrontmostApplication();
+        const isFinder =
+          frontmost.bundleId === "com.apple.finder" ||
+          frontmost.name === "Finder";
+        if (!isFinder) {
+          setPhase("picker");
+          return;
+        }
+      } catch {
+        setPhase("picker");
+        return;
+      }
+
       let selection: Array<{ path: string }>;
       try {
         selection = await getSelectedFinderItems();

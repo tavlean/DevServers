@@ -235,6 +235,9 @@ interface RowVisibility {
 }
 
 interface ServerItemProps {
+  // Stable List.Item id (the server pid as a string). Drives controlled
+  // selection from the parent so we can focus a just-spawned server.
+  id: string;
   server: DevServer;
   terminalApp: Application;
   show: RowVisibility;
@@ -246,6 +249,7 @@ interface ServerItemProps {
 }
 
 function ServerItem({
+  id,
   server,
   terminalApp,
   show,
@@ -307,6 +311,7 @@ function ServerItem({
 
   return (
     <List.Item
+      id={id}
       icon={icon}
       title={titleHost}
       subtitle={subtitle}
@@ -603,6 +608,17 @@ export default function Command(
   );
   const toastRef = useRef<Toast | null>(null);
 
+  // Controlled list selection. We keep selection in state so we can jump the
+  // cursor to a just-spawned (or just-restarted) server, while onSelectionChange
+  // feeds the user's own navigation back in. This two-way wiring is what keeps
+  // a pinned selectedItemId from yanking the cursor back to the new row on every
+  // background poll — once the user moves, state follows them. The id is the
+  // server pid as a string (see List.Item `id` below); undefined lets Raycast
+  // manage selection itself (initial mount, or when a filter clears the list).
+  const [selectedItemId, setSelectedItemId] = useState<string | undefined>(
+    undefined,
+  );
+
   // Dashboard polling cadence. Faster only while actively watching for a
   // just-spawned server to bind a port, so it appears within ~1s. We do NOT
   // fast-poll during "pending"/"confirming": nothing is spawning yet, and
@@ -741,7 +757,17 @@ export default function Command(
     }
     if (remaining.size > 0) return;
 
-    // All expected servers detected.
+    // All expected servers detected. Move the cursor onto the newly started
+    // server so the default ↵ action operates on it instead of whatever row
+    // happened to be selected (the list is ordered by PID, not start time, so
+    // a new server usually lands at the bottom — see the grouping below). When
+    // several were started at once, focus the first; the user can step through
+    // the rest. Resolving by cwd picks whichever server is now listening for
+    // that cwd, which is the freshly spawned one even after a kill+respawn.
+    const firstCwd = [...expecting.keys()][0];
+    const focusTarget = servers.find((x) => x.cwd === firstCwd);
+    if (focusTarget) setSelectedItemId(String(focusTarget.pid));
+
     if (spawnState.autoOpen) {
       for (const cwd of expecting.keys()) {
         const s = servers.find((x) => x.cwd === cwd);
@@ -896,10 +922,15 @@ export default function Command(
   async function restart(server: DevServer) {
     // Snapshot the project's server count BEFORE killing the old one so we
     // can detect when a new server has bound a port. We use serversRef.current
-    // so we always see the latest state across the polling loop.
-    const baseline = serversRef.current.filter(
-      (s) => s.cwd === server.cwd && s.pid !== server.pid,
-    ).length;
+    // so we always see the latest state across the polling loop. The pid set
+    // (excluding the one we're about to kill) lets us single out the
+    // replacement afterwards so we can move the cursor onto it.
+    const priorPids = new Set(
+      serversRef.current
+        .filter((s) => s.cwd === server.cwd && s.pid !== server.pid)
+        .map((s) => s.pid),
+    );
+    const baseline = priorPids.size;
     try {
       await mutate(restartServer(server), {
         optimisticUpdate: (current) =>
@@ -929,6 +960,13 @@ export default function Command(
       if (restored) {
         toast.style = Toast.Style.Success;
         toast.title = "Restarted";
+        // Focus the replacement: the cwd's server whose pid wasn't running
+        // before the kill. Falls back to any current server for the cwd in the
+        // unlikely case the new pid matches a prior one (pid reuse).
+        const sameCwd = serversRef.current.filter((s) => s.cwd === server.cwd);
+        const replacement =
+          sameCwd.find((s) => !priorPids.has(s.pid)) ?? sameCwd[0];
+        if (replacement) setSelectedItemId(String(replacement.pid));
       } else {
         toast.style = Toast.Style.Failure;
         toast.title = "Restart timed out";
@@ -999,6 +1037,8 @@ export default function Command(
     <List
       isLoading={effectiveLoading}
       searchBarPlaceholder="Filter servers..."
+      selectedItemId={selectedItemId}
+      onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
       searchBarAccessory={
         availableTools.length > 1 ? (
           <List.Dropdown
@@ -1062,6 +1102,7 @@ export default function Command(
           {projectServers.map((server) => (
             <ServerItem
               key={server.pid}
+              id={String(server.pid)}
               server={server}
               terminalApp={terminalApp}
               show={show}
