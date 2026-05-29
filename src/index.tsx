@@ -46,37 +46,40 @@ import { DevServer } from "./types";
 // the user having to bounce back to root search.
 async function openStartCommand(): Promise<void> {
   try {
-    await launchCommand({ name: "start", type: LaunchType.UserInitiated });
+    // forcePicker tells the Start command to skip its Finder-selection
+    // probe and go straight to the recents/Choose-Folder picker. From the
+    // dashboard the user is in "manage running servers" mode and wants to
+    // choose what to start, not have a stale Finder selection hijacked into
+    // a spawn/restart of whatever happens to be selected.
+    await launchCommand({
+      name: "start",
+      type: LaunchType.UserInitiated,
+      context: { forcePicker: true },
+    });
   } catch (err) {
     await showFailureToast(err, { title: "Couldn't open Start Dev Server" });
   }
 }
 
-// Shallow equality on the dashboard's view of the server list: same
-// length, and the same user-visible fields in the same positions. ps
-// returns processes in PID order which is stable for the same processes
-// between polls, so position-wise comparison is enough.
+// Shallow equality on the dashboard's view of the server list: same length,
+// and same pid+port in the same positions. ps returns processes in PID order
+// which is stable for the same processes between polls, so position-wise
+// comparison is enough to catch what we care about (a server starting or
+// dying), and `fetchStableServers` can hand back the previous array reference
+// when nothing changed so React bails out of the re-render.
 //
-// We compare pid+port AND the fields that can change in place while a PID
-// keeps running: branch (git checkout), and the custom-domain set / primary
-// URL (a portless alias attached or removed live). Comparing only pid+port
-// would let `fetchStableServers` hand back the previous reference and mask
-// those changes: e.g. a freshly-attached `myapp.localhost` would never
-// surface until the server restarted. uptime is excluded on purpose: it's
-// derived from a stable `startedAt`, so it re-renders on its own cadence
-// without forcing a list-identity change every poll.
+// Deliberately compares ONLY pid+port, not derived fields like the portless
+// `url`/`customUrls`. Those come from a `portless list` shell-out with a 3s
+// timeout that can intermittently miss, so including them made the comparison
+// flap (alias present one poll, absent the next), defeating the dedupe and
+// churning re-renders. The tradeoff is that a portless alias attached to an
+// already-running server isn't reflected until its PID changes, which is fine:
+// aliases are set up at server start in practice, and this matches the
+// long-shipped behavior.
 function sameServers(a: DevServer[], b: DevServer[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (
-      a[i].pid !== b[i].pid ||
-      a[i].port !== b[i].port ||
-      a[i].url !== b[i].url ||
-      a[i].branch !== b[i].branch ||
-      (a[i].customUrls ?? []).join(",") !== (b[i].customUrls ?? []).join(",")
-    ) {
-      return false;
-    }
+    if (a[i].pid !== b[i].pid || a[i].port !== b[i].port) return false;
   }
   return true;
 }
@@ -600,18 +603,17 @@ export default function Command(
   );
   const toastRef = useRef<Toast | null>(null);
 
-  // Dashboard polling cadence. Faster while a spawn is in flight, so the
-  // new server appears in the list within ~1s of binding rather than
-  // waiting for the user's full refresh interval.
+  // Dashboard polling cadence. Faster only while actively watching for a
+  // just-spawned server to bind a port, so it appears within ~1s. We do NOT
+  // fast-poll during "pending"/"confirming": nothing is spawning yet, and
+  // "confirming" can block indefinitely on a confirm dialog — polling at 1s
+  // there just toggles isLoading every second, producing a burst of identical
+  // re-renders that trips Raycast's "rendering a lot" warning for no benefit.
   useEffect(() => {
-    const fastPhases: SpawnPhase["phase"][] = [
-      "pending",
-      "confirming",
-      "spawning",
-    ];
-    const ms = fastPhases.includes(spawnState.phase)
-      ? 1000
-      : parseInt(prefs.refreshInterval) * 1000;
+    const ms =
+      spawnState.phase === "spawning"
+        ? 1000
+        : parseInt(prefs.refreshInterval) * 1000;
     const id = setInterval(revalidate, ms);
     return () => clearInterval(id);
   }, [spawnState.phase, prefs.refreshInterval, revalidate]);

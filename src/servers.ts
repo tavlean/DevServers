@@ -205,7 +205,9 @@ function detectTool(command: string, cwd: string): string {
 function hasSvelteConfig(cwd: string): boolean {
   return (
     fs.existsSync(`${cwd}/svelte.config.js`) ||
-    fs.existsSync(`${cwd}/svelte.config.ts`)
+    fs.existsSync(`${cwd}/svelte.config.ts`) ||
+    fs.existsSync(`${cwd}/svelte.config.mjs`) ||
+    fs.existsSync(`${cwd}/svelte.config.cjs`)
   );
 }
 

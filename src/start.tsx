@@ -5,6 +5,7 @@ import {
   Application,
   Color,
   Icon,
+  LaunchProps,
   LaunchType,
   List,
   LocalStorage,
@@ -414,22 +415,36 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
 // lifecycle. The user lands on the dashboard immediately rather than
 // waiting on a blank Start view for slow pre-spawn work.
 //
-//   ┌─ Finder selection present?
-//   │      ├─ Yes → resolve targets, launchCommand to dashboard with
-//   │      │       spawn details in launchContext.
-//   │      └─ No  → render the picker (recents + "Choose Folder…").
-export default function Command() {
+//   ┌─ forcePicker (launched from the dashboard's ⌘N / empty state)?
+//   │      ├─ Yes → render the picker directly, skip the Finder probe.
+//   │      └─ No  → ┌─ Finder selection present?
+//   │              │      ├─ Yes → resolve targets, launchCommand to dashboard
+//   │              │      │       with spawn details in launchContext.
+//   │              │      └─ No  → render the picker (recents + "Choose Folder…").
+//
+// forcePicker exists because `getSelectedFinderItems` returns Finder's current
+// selection regardless of what's frontmost. Launched from the dashboard the
+// user is choosing what to start, so a stale Finder selection must not be
+// silently turned into a spawn/restart of whatever happens to be selected.
+export default function Command(
+  props: LaunchProps<{ launchContext?: { forcePicker?: boolean } }>,
+) {
   const prefs = getPreferenceValues<Preferences.Start>();
   const autoOpen = prefs.autoOpenInBrowser ?? false;
   const confirmMulti = prefs.confirmMultiStart ?? true;
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
+  const forcePicker = props.launchContext?.forcePicker ?? false;
 
-  const [phase, setPhase] = useState<"checking" | "picker">("checking");
+  const [phase, setPhase] = useState<"checking" | "picker">(
+    forcePicker ? "picker" : "checking",
+  );
   // Guard against React's StrictMode double-invocation of effects in
   // development, which would otherwise probe Finder twice.
   const probedRef = useRef(false);
 
   useEffect(() => {
+    // Dashboard-initiated launch: go straight to the picker, no Finder probe.
+    if (forcePicker) return;
     if (probedRef.current) return;
     probedRef.current = true;
     void (async () => {
@@ -472,7 +487,7 @@ export default function Command() {
         { autoOpen, confirmMulti },
       );
     })();
-  }, [autoOpen, confirmMulti]);
+  }, [autoOpen, confirmMulti, forcePicker]);
 
   if (phase === "picker") {
     return <PickerView autoOpen={autoOpen} terminalApp={terminalApp} />;
