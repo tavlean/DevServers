@@ -168,12 +168,53 @@ async function getGitInfo(cwd: string): Promise<GitInfo | undefined> {
 // Pure aggregation (cross-platform)
 // ---------------------------------------------------------------------------
 
+type ShopifyTool = "shopify-theme" | "shopify-app" | "shopify-hydrogen";
+
+function commandBase(token: string): string {
+  return path.basename(token).replace(/\.(?:cmd|exe|ps1)$/i, "");
+}
+
+function shopifyToolFromArgs(
+  tokens: string[],
+  index: number,
+): ShopifyTool | null {
+  const area = tokens[index + 1];
+  const command = tokens[index + 2];
+  if (area === "theme" && command === "dev") return "shopify-theme";
+  if (area === "app" && command === "dev") return "shopify-app";
+  if (area === "hydrogen" && command === "dev") return "shopify-hydrogen";
+  return null;
+}
+
+function detectShopifyTool(command: string): ShopifyTool | null {
+  const tokens = command.trim().split(/\s+/);
+  if (tokens.length < 3) return null;
+
+  if (commandBase(tokens[0]) === "shopify") {
+    return shopifyToolFromArgs(tokens, 0);
+  }
+
+  // Global Shopify CLI installs commonly show up as:
+  //   node /path/to/bin/shopify theme dev
+  // Keep this bounded so wrapper commands like `concurrently ... shopify theme
+  // dev` don't get mislabeled if the wrapper ever owns a listener.
+  if (["node", "nodejs", "bun", "npx"].includes(commandBase(tokens[0]))) {
+    for (let i = 1; i < Math.min(tokens.length - 2, 5); i++) {
+      if (commandBase(tokens[i]) !== "shopify") continue;
+      return shopifyToolFromArgs(tokens, i);
+    }
+  }
+
+  return null;
+}
+
 // A candidate is anything launched from node_modules (broader than .bin/ so
-// we catch `node node_modules/serve/build/main.js` etc.) OR a bare bun
-// process. Over-collection is harmless: only PIDs with a LISTEN socket
-// survive the join below.
+// we catch `node node_modules/serve/build/main.js` etc.), a bare bun process,
+// OR a Shopify CLI dev process. Over-collection is harmless: only PIDs with a
+// LISTEN socket survive the join below.
 function isCandidate(proc: RawProcess): boolean {
   if (/node_modules\//.test(proc.command)) return true;
+  if (detectShopifyTool(proc.command)) return true;
   const exec = proc.command.split(/\s+/, 1)[0];
   return /(\/|^)bun$/.test(exec);
 }
@@ -184,6 +225,9 @@ function detectRuntime(command: string): "node" | "bun" {
 }
 
 function detectTool(command: string, cwd: string): string {
+  const shopifyTool = detectShopifyTool(command);
+  if (shopifyTool) return shopifyTool;
+
   // 1. Prefer the .bin/ name (e.g. node_modules/.bin/vite)
   const bin = command.match(/node_modules\/\.bin\/(\S+)/);
   if (bin) {

@@ -1,5 +1,10 @@
 # Dev Servers Changelog
 
+## [Shopify dev server detection] - {PR_MERGE_DATE}
+
+- Detect running Shopify CLI dev servers launched globally, including `shopify theme dev`, `shopify app dev`, and `shopify hydrogen dev`, so they appear in the dashboard even when the process is outside `node_modules`.
+- Add Shopify-specific tool tags for running servers: Shopify Theme, Shopify App, and Hydrogen.
+
 ## [Start Dev Server] - 2026-06-01
 
 Adds a `Start Dev Server` command for spinning up dev servers without leaving Raycast. Works from a Finder selection, from a list of recently-seen projects, or from a native folder picker.
