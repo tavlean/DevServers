@@ -62,13 +62,18 @@ async function openStartCommand(): Promise<void> {
 }
 
 // Shallow equality on the dashboard's view of the server list: same length,
-// and same pid+port in the same positions. ps returns processes in PID order
-// which is stable for the same processes between polls, so position-wise
+// and same pid+port+branch in the same positions. ps returns processes in PID
+// order which is stable for the same processes between polls, so position-wise
 // comparison is enough to catch what we care about (a server starting or
-// dying), and `fetchStableServers` can hand back the previous array reference
-// when nothing changed so React bails out of the re-render.
+// dying, or a branch switch), and `fetchStableServers` can hand back the
+// previous array reference when nothing changed so React bails out of the
+// re-render.
 //
-// Deliberately compares ONLY pid+port, not derived fields like the portless
+// Branch is included because it comes from a local git/HEAD read that's
+// reliable poll-to-poll, and users do switch branches under a running server;
+// without it the row would keep showing the old branch until the PID changed.
+//
+// Deliberately does NOT compare derived fields like the portless
 // `url`/`customUrls`. Those come from a `portless list` shell-out with a 3s
 // timeout that can intermittently miss, so including them made the comparison
 // flap (alias present one poll, absent the next), defeating the dedupe and
@@ -79,7 +84,12 @@ async function openStartCommand(): Promise<void> {
 function sameServers(a: DevServer[], b: DevServer[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i].pid !== b[i].pid || a[i].port !== b[i].port) return false;
+    if (
+      a[i].pid !== b[i].pid ||
+      a[i].port !== b[i].port ||
+      a[i].branch !== b[i].branch
+    )
+      return false;
   }
   return true;
 }
