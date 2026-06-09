@@ -140,9 +140,18 @@ interface GitInfo {
   branch: string;
 }
 
-// Resolve git common-dir and branch for a cwd. Returns undefined when cwd
-// isn't inside a git working tree. One process spawn per call.
-async function getGitInfo(cwd: string): Promise<GitInfo | undefined> {
+interface GitProbe {
+  info: GitInfo | undefined;
+  // Absolute path to the HEAD file that defines `branch` (per-worktree for
+  // linked worktrees). Its mtime changes on every checkout, which makes it a
+  // cheap cache-invalidation signal: see getGitInfoCached.
+  headPath?: string;
+}
+
+// Resolve git common-dir, branch, and HEAD path for a cwd. Returns
+// info: undefined when cwd isn't inside a git working tree. One process
+// spawn per call; callers should go through getGitInfoCached.
+async function probeGit(cwd: string): Promise<GitProbe> {
   try {
     const { stdout } = await execFileAsync("git", [
       "-C",
@@ -151,17 +160,69 @@ async function getGitInfo(cwd: string): Promise<GitInfo | undefined> {
       "--git-common-dir",
       "--abbrev-ref",
       "HEAD",
+      "--git-path",
+      "HEAD",
     ]);
-    const [commonDirRaw, branchRaw] = stdout.trim().split("\n");
-    if (!commonDirRaw) return undefined;
+    // rev-parse prints one line per request, in argument order.
+    const [commonDirRaw, branchRaw, headRaw] = stdout.trim().split("\n");
+    if (!commonDirRaw) return { info: undefined };
     const commonDir = path.isAbsolute(commonDirRaw)
       ? commonDirRaw
       : path.resolve(cwd, commonDirRaw);
     const branch = branchRaw === "HEAD" ? "" : (branchRaw ?? "");
-    return { commonDir, branch };
+    const headPath = headRaw
+      ? path.isAbsolute(headRaw)
+        ? headRaw
+        : path.resolve(cwd, headRaw)
+      : undefined;
+    return { info: { commonDir, branch }, headPath };
   } catch {
-    return undefined;
+    return { info: undefined };
   }
+}
+
+interface GitCacheEntry {
+  probe: GitProbe;
+  headMtimeMs?: number;
+  checkedAt: number;
+}
+
+// Per-cwd git cache. Spawning `git rev-parse` for every project on every
+// poll is the kind of background cost that adds up in a long-lived
+// dashboard session; the data it returns only changes on checkout. The HEAD
+// file's mtime is bumped by every checkout (including in linked worktrees,
+// which each have their own HEAD), so a single statSync per project per poll
+// replaces the spawn. Non-git cwds re-probe on a coarse TTL so a `git init`
+// under a running server is eventually picked up.
+const gitCache = new Map<string, GitCacheEntry>();
+const NON_GIT_RECHECK_MS = 60_000;
+
+async function getGitInfoCached(cwd: string): Promise<GitInfo | undefined> {
+  const entry = gitCache.get(cwd);
+  if (entry) {
+    if (entry.probe.info && entry.probe.headPath) {
+      try {
+        const mtime = fs.statSync(entry.probe.headPath).mtimeMs;
+        if (mtime === entry.headMtimeMs) return entry.probe.info;
+      } catch {
+        // HEAD vanished (repo deleted out from under us); fall through to a
+        // fresh probe.
+      }
+    } else if (Date.now() - entry.checkedAt < NON_GIT_RECHECK_MS) {
+      return entry.probe.info;
+    }
+  }
+  const probe = await probeGit(cwd);
+  let headMtimeMs: number | undefined;
+  if (probe.headPath) {
+    try {
+      headMtimeMs = fs.statSync(probe.headPath).mtimeMs;
+    } catch {
+      // Unreadable HEAD just means we re-probe next poll.
+    }
+  }
+  gitCache.set(cwd, { probe, headMtimeMs, checkedAt: Date.now() });
+  return probe.info;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +334,19 @@ function lowestPortPerPid(listeners: RawListener[]): Map<number, number> {
 // Public API
 // ---------------------------------------------------------------------------
 
+// Per-PID metadata cache. A process's cwd, tool, and runtime are immutable
+// for its lifetime, so we resolve them once per PID and skip the second lsof
+// (cwd lookup) plus the tool-detection regexes on every later poll. Keyed by
+// pid and validated against lstart so a recycled PID can't inherit a dead
+// process's metadata.
+interface PidMeta {
+  lstart: string;
+  cwd: string;
+  tool: string;
+  runtime: "node" | "bun";
+}
+const pidMetaCache = new Map<number, PidMeta>();
+
 export async function fetchServers(): Promise<DevServer[]> {
   const [procs, listeners, aliasesByPort] = await Promise.all([
     listProcesses(),
@@ -281,45 +355,71 @@ export async function fetchServers(): Promise<DevServer[]> {
   ]);
   const candidates = procs.filter(isCandidate);
   const portByPid = lowestPortPerPid(listeners);
-  // Only query cwds for candidates that are actually listening, which keeps the
-  // lsof argument list short and skips dead PIDs.
-  const finalPids = candidates
-    .map((p) => p.pid)
-    .filter((pid) => portByPid.has(pid));
-  const cwdByPid = await listCwds(finalPids);
+  const live = candidates.filter((p) => portByPid.has(p.pid));
 
-  // Look up git info per unique cwd, in parallel. Worktrees of the same repo
-  // share a git common-dir, so we use that path as the project key, which collapses
-  // sibling worktrees into one group while still letting us show the branch on
-  // each row. The project's display name is the basename of the common-dir's
-  // parent (the repo root).
-  const uniqueCwds = [...new Set([...cwdByPid.values()])];
+  // Resolve cwds only for PIDs we haven't seen before (or whose lstart says
+  // the PID was recycled). On a steady-state poll this list is empty and the
+  // lsof cwd query is skipped entirely.
+  const unseen = live.filter(
+    (p) => pidMetaCache.get(p.pid)?.lstart !== p.lstart,
+  );
+  const cwdByPid = await listCwds(unseen.map((p) => p.pid));
+  for (const proc of unseen) {
+    const cwd = cwdByPid.get(proc.pid);
+    if (!cwd) continue; // shouldn't happen for live processes, but be safe
+    pidMetaCache.set(proc.pid, {
+      lstart: proc.lstart,
+      cwd,
+      tool: detectTool(proc.command, cwd),
+      runtime: detectRuntime(proc.command),
+    });
+  }
+  // Evict entries for processes that are gone so the cache stays bounded.
+  const livePids = new Set(live.map((p) => p.pid));
+  for (const pid of pidMetaCache.keys()) {
+    if (!livePids.has(pid)) pidMetaCache.delete(pid);
+  }
+
+  // Look up git info per unique cwd, in parallel (cached by HEAD mtime, see
+  // getGitInfoCached). Worktrees of the same repo share a git common-dir, so
+  // we use that path as the project key, which collapses sibling worktrees
+  // into one group while still letting us show the branch on each row. The
+  // project's display name is the basename of the common-dir's parent (the
+  // repo root).
+  const uniqueCwds = [
+    ...new Set(
+      live
+        .map((p) => pidMetaCache.get(p.pid)?.cwd)
+        .filter((c): c is string => Boolean(c)),
+    ),
+  ];
   const gitByCwd = new Map<string, GitInfo | undefined>();
   await Promise.all(
-    uniqueCwds.map(async (cwd) => gitByCwd.set(cwd, await getGitInfo(cwd))),
+    uniqueCwds.map(async (cwd) =>
+      gitByCwd.set(cwd, await getGitInfoCached(cwd)),
+    ),
   );
 
   const servers: DevServer[] = [];
-  for (const proc of candidates) {
+  for (const proc of live) {
+    const meta = pidMetaCache.get(proc.pid);
+    if (!meta) continue;
     const port = portByPid.get(proc.pid);
     if (port === undefined) continue;
-    const cwd = cwdByPid.get(proc.pid);
-    if (!cwd) continue; // shouldn't happen for live processes, but be safe
-    const tool = detectTool(proc.command, cwd);
     // Drop the portless proxy daemon itself. It's a node process out of
     // node_modules/portless/ that binds 80/443/1355, and would otherwise
     // appear as a phantom "dev server" row. Child processes spawned by
     // portless run their own framework binary (next, vite, …) so they
     // resolve to that tool, not "portless".
-    if (tool === "portless") continue;
-    const git = gitByCwd.get(cwd);
+    if (meta.tool === "portless") continue;
+    const git = gitByCwd.get(meta.cwd);
     // For git projects: key is the shared .git dir path (stable across all
     // worktrees of the repo), name is the basename of its parent (the repo
     // root). For non-git: both fall back to the worktree itself.
     const projectName = git
       ? path.basename(path.dirname(git.commonDir))
-      : path.basename(cwd) || cwd;
-    const projectKey = git ? git.commonDir : cwd;
+      : path.basename(meta.cwd) || meta.cwd;
+    const projectKey = git ? git.commonDir : meta.cwd;
     const customUrls = aliasesByPort.get(port);
     const localUrl = `http://localhost:${port}`;
     servers.push({
@@ -328,9 +428,9 @@ export async function fetchServers(): Promise<DevServer[]> {
       url: customUrls?.[0] ?? localUrl,
       localUrl,
       customUrls,
-      tool,
-      runtime: detectRuntime(proc.command),
-      cwd,
+      tool: meta.tool,
+      runtime: meta.runtime,
+      cwd: meta.cwd,
       projectKey,
       projectName,
       branch: git?.branch || undefined,
