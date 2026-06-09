@@ -217,6 +217,14 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
     [logPath],
   );
 
+  // Follow the file while the view is open so a server that's still booting
+  // (or crashing) streams its output in like a live tail, instead of asking
+  // the user to mash ⌘R while diagnosing.
+  useEffect(() => {
+    const id = setInterval(revalidate, 2000);
+    return () => clearInterval(id);
+  }, [revalidate]);
+
   const log = (data ?? "").trim();
   const exists = fs.existsSync(logPath);
   const body = log
