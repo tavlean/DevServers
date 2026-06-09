@@ -31,6 +31,10 @@ interface RawProcess {
 interface RawListener {
   pid: number;
   port: number;
+  // True when the socket is bound beyond loopback (wildcard or a concrete
+  // LAN address), i.e. the server is reachable from other devices on the
+  // network. Drives the "Copy Network URL" action.
+  lanExposed: boolean;
 }
 
 // Capture stdout even when the child exits non-zero (lsof exits 1 if any of
@@ -97,8 +101,17 @@ async function listListeners(): Promise<RawListener[]> {
       currentPid = parseInt(line.slice(1), 10);
     } else if (line[0] === "n" && currentPid > 0) {
       const addr = line.slice(1);
-      const port = parseInt(addr.slice(addr.lastIndexOf(":") + 1), 10);
-      if (port > 0) out.push({ pid: currentPid, port });
+      const colon = addr.lastIndexOf(":");
+      const port = parseInt(addr.slice(colon + 1), 10);
+      if (port > 0) {
+        const host = addr.slice(0, colon);
+        const lanExposed = !(
+          host === "127.0.0.1" ||
+          host === "[::1]" ||
+          host.startsWith("127.")
+        );
+        out.push({ pid: currentPid, port, lanExposed });
+      }
     }
   }
   return out;
@@ -357,6 +370,13 @@ export async function fetchServers(): Promise<DevServer[]> {
   const portByPid = lowestPortPerPid(listeners);
   const live = candidates.filter((p) => portByPid.has(p.pid));
 
+  // True when any of the PID's listening sockets (lowest-port or not) is
+  // reachable beyond loopback. Wildcard binds show up as "*:PORT".
+  const lanExposedByPid = new Set<number>();
+  for (const l of listeners) {
+    if (l.lanExposed) lanExposedByPid.add(l.pid);
+  }
+
   // Resolve cwds only for PIDs we haven't seen before (or whose lstart says
   // the PID was recycled). On a steady-state poll this list is empty and the
   // lsof cwd query is skipped entirely.
@@ -434,6 +454,7 @@ export async function fetchServers(): Promise<DevServer[]> {
       projectKey,
       projectName,
       branch: git?.branch || undefined,
+      lanExposed: lanExposedByPid.has(proc.pid),
       startedAt: new Date(proc.lstart),
     });
   }

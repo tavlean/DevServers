@@ -21,6 +21,7 @@ import {
 } from "@raycast/api";
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
 import {
@@ -92,6 +93,22 @@ function sameServers(a: DevServer[], b: DevServer[]): boolean {
       return false;
   }
   return true;
+}
+
+// First non-internal IPv4 address, for "open this on your phone" URLs.
+// Prefer en0/en1 (built-in Wi-Fi / Ethernet on Macs) so a VPN utun or
+// container bridge doesn't win just by sorting first.
+function lanIPv4(): string | undefined {
+  const ifaces = os.networkInterfaces();
+  const pick = (name: string) =>
+    ifaces[name]?.find((a) => a.family === "IPv4" && !a.internal)?.address;
+  const preferred = pick("en0") ?? pick("en1");
+  if (preferred) return preferred;
+  for (const addrs of Object.values(ifaces)) {
+    const hit = addrs?.find((a) => a.family === "IPv4" && !a.internal);
+    if (hit) return hit.address;
+  }
+  return undefined;
 }
 
 // Strip scheme and trailing slash so a primary URL renders cleanly as the row
@@ -252,6 +269,9 @@ interface ServerItemProps {
   terminalApp: Application;
   // Unset when the user hasn't picked an editor; the action is hidden then.
   editorApp?: Application;
+  // This Mac's LAN IPv4, when one exists. Combined with `server.lanExposed`
+  // to offer a network URL other devices on the network can reach.
+  lanIp?: string;
   show: RowVisibility;
   onKill: () => void;
   onKillProject: () => void;
@@ -265,6 +285,7 @@ function ServerItem({
   server,
   terminalApp,
   editorApp,
+  lanIp,
   show,
   onKill,
   onKillProject,
@@ -413,6 +434,21 @@ function ServerItem({
                 shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
               />
             )}
+            {/* Network URL is for testing on a phone or another machine on
+             * the same network. Only offered when the server actually binds
+             * beyond loopback, so we never hand out a URL that can't connect. */}
+            {server.lanExposed && lanIp && (
+              <Action.CopyToClipboard
+                title="Copy Network URL"
+                content={`http://${lanIp}:${server.port}`}
+                shortcut={{ modifiers: ["cmd", "opt"], key: "c" }}
+              />
+            )}
+            <Action.CopyToClipboard
+              title="Copy Port"
+              content={server.port}
+              shortcut={{ modifiers: ["cmd", "opt"], key: "p" }}
+            />
           </ActionPanel.Section>
           <ActionPanel.Section>
             {editorApp && (
@@ -1025,6 +1061,9 @@ export default function Command(
 
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const editorApp = prefs.editorApp;
+  // Resolved once per mount; a Wi-Fi change mid-session is rare enough that
+  // reopening the command is an acceptable refresh.
+  const lanIp = useMemo(lanIPv4, []);
   const [toolFilter, setToolFilter] = useState<string>("all");
 
   // Visibility prefs default to true so first-time users see everything.
@@ -1151,6 +1190,7 @@ export default function Command(
               server={server}
               terminalApp={terminalApp}
               editorApp={editorApp}
+              lanIp={lanIp}
               show={show}
               onKill={() => kill(server.pid)}
               onKillProject={() => killProject(projectKey)}
