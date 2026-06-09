@@ -539,12 +539,39 @@ export function canonicalCwd(p: string): string {
   }
 }
 
-// Walk up from a filesystem path to the nearest directory containing a
-// package.json. Used to resolve a Finder selection (which may be a file, a
-// subfolder, or the project root itself) to a project root we can spawn in.
-// The returned path is canonicalized so it round-trips through process
-// inspection without symlink-induced mismatches. Returns null when the
-// path isn't inside any Node project.
+// A Shopify theme root. Shopify CLI requires only `layout/theme.liquid` to
+// treat a directory as a theme ("Only a layout directory containing a
+// theme.liquid file is required"), so that's the canonical marker.
+// `shopify.theme.toml` (the CLI's optional environments file) is accepted as
+// a secondary signal for repos that keep one at the root.
+export function isShopifyThemeRoot(dir: string): boolean {
+  return (
+    fs.existsSync(path.join(dir, "layout", "theme.liquid")) ||
+    fs.existsSync(path.join(dir, "shopify.theme.toml"))
+  );
+}
+
+// A Shopify app root. Per Shopify's app-structure docs, shopify.app.toml
+// "represents the root of the app".
+export function isShopifyAppRoot(dir: string): boolean {
+  return fs.existsSync(path.join(dir, "shopify.app.toml"));
+}
+
+function isProjectRoot(dir: string): boolean {
+  return (
+    fs.existsSync(path.join(dir, "package.json")) ||
+    isShopifyThemeRoot(dir) ||
+    isShopifyAppRoot(dir)
+  );
+}
+
+// Walk up from a filesystem path to the nearest directory that looks like a
+// startable project: one containing a package.json, or a Shopify theme/app
+// root (themes have no package.json at all). Used to resolve a Finder
+// selection (which may be a file, a subfolder, or the project root itself)
+// to a project root we can spawn in. The returned path is canonicalized so
+// it round-trips through process inspection without symlink-induced
+// mismatches. Returns null when the path isn't inside any known project.
 export function findProjectRoot(startPath: string): string | null {
   let cur: string;
   try {
@@ -554,7 +581,7 @@ export function findProjectRoot(startPath: string): string | null {
     return null;
   }
   for (;;) {
-    if (fs.existsSync(path.join(cur, "package.json"))) return canonicalCwd(cur);
+    if (isProjectRoot(cur)) return canonicalCwd(cur);
     const parent = path.dirname(cur);
     if (parent === cur) return null;
     cur = parent;
@@ -564,6 +591,37 @@ export function findProjectRoot(startPath: string): string | null {
 // Slugify cwd for use in a temp-dir log filename.
 function cwdSlug(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "root";
+}
+
+// Decide what command starts this project's dev server.
+//
+// 1. A package.json dev script always wins: it's the project's explicit
+//    intent, and scaffolded Shopify apps and Hydrogen storefronts already
+//    ship `dev: shopify app dev` / `shopify hydrogen dev` there, so they
+//    resolve through this branch like any other Node project. Explicit
+//    scripts also cover themes that wrap `shopify theme dev` in
+//    concurrently-style tooling.
+// 2. With no usable script, fall back to the Shopify CLI for theme and app
+//    roots. Themes are the important case: they have no package.json, so
+//    nothing else could ever start (or restart) them.
+//
+// First-run caveat for the Shopify fallbacks: `shopify theme dev` / `app
+// dev` prompt for login and store selection when the CLI has no remembered
+// state. A detached spawn can't answer prompts, so the 15s watchdog fires
+// and the startup log shows the prompt text. After a one-time
+// `shopify theme dev --store <store>` in a terminal, the CLI remembers the
+// store and starts cleanly from here.
+function planSpawn(cwd: string): { cmd: string; args: string[] } | null {
+  const script = pickDevScript(cwd);
+  if (script) {
+    const pm = detectPackageManager(cwd);
+    const [cmd, baseArgs] = PM_RUN[pm];
+    return { cmd, args: [...baseArgs, script] };
+  }
+  if (isShopifyThemeRoot(cwd))
+    return { cmd: "shopify", args: ["theme", "dev"] };
+  if (isShopifyAppRoot(cwd)) return { cmd: "shopify", args: ["app", "dev"] };
+  return null;
 }
 
 // Spawn a dev server for a project. Shared by the Start Dev Server flow
@@ -586,17 +644,15 @@ function cwdSlug(cwd: string): string {
 //   the PID has been replaced by the new server. Use `spawnLogPath(cwd)`
 //   to reach it from error toasts.
 //
-// Throws if pickDevScript can't find a runnable script.
+// Throws if planSpawn can't find a runnable command.
 export async function startDevServer(cwd: string): Promise<void> {
-  const script = pickDevScript(cwd);
-  if (!script) {
+  const plan = planSpawn(cwd);
+  if (!plan) {
     throw new Error(
-      "No dev script found in package.json. Expected one of: dev, start, develop, or a script that invokes a known dev-server tool.",
+      "No way to start this project. Expected a package.json with a dev/start/develop script (or one invoking a known dev-server tool), or a Shopify theme/app root.",
     );
   }
-  const pm = detectPackageManager(cwd);
-  const [cmd, baseArgs] = PM_RUN[pm];
-  const args = [...baseArgs, script];
+  const { cmd, args } = plan;
   const out = fs.openSync(spawnLogPath(cwd), "a");
   const child = spawn("/bin/zsh", ["-ilc", 'exec "$0" "$@"', cmd, ...args], {
     cwd,

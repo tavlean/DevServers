@@ -35,7 +35,12 @@ import {
   recordSeenBatch,
   removeRecent,
 } from "./recents";
-import { fetchServers, findProjectRoot } from "./servers";
+import {
+  fetchServers,
+  findProjectRoot,
+  isShopifyAppRoot,
+  isShopifyThemeRoot,
+} from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
 
@@ -60,10 +65,15 @@ async function maybeConsumeAutoOpenHint(): Promise<boolean> {
   return true;
 }
 
-// Best-guess framework for a project, read from package.json dependencies.
-// UI tag only. Process inspection is still the source of truth for a
-// running server.
+// Best-guess framework for a project, read from filesystem markers and
+// package.json dependencies. UI tag only. Process inspection is still the
+// source of truth for a running server.
 function guessFramework(cwd: string): string | undefined {
+  // Shopify projects first: themes have no package.json at all, and app /
+  // Hydrogen projects carry framework deps (Remix, Vite) that would
+  // otherwise win below and mislabel them.
+  if (isShopifyThemeRoot(cwd)) return "shopify-theme";
+  if (isShopifyAppRoot(cwd)) return "shopify-app";
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(cwd, "package.json"), "utf8"),
@@ -75,6 +85,7 @@ function guessFramework(cwd: string): string | undefined {
       ...(pkg.dependencies ?? {}),
       ...(pkg.devDependencies ?? {}),
     };
+    if ("@shopify/hydrogen" in deps) return "shopify-hydrogen";
     if ("next" in deps) return "next";
     if ("@sveltejs/kit" in deps) return "sveltekit";
     if ("svelte" in deps) return "svelte";
@@ -171,8 +182,9 @@ async function chooseFolderAndStart(options: {
   const target = resolveTarget(raw);
   if (!target) {
     await showFailureToast(undefined, {
-      title: "No package.json found",
-      message: "That folder isn't inside a Node project.",
+      title: "No project found",
+      message:
+        "That folder isn't inside a Node project or a Shopify theme/app.",
     });
     return;
   }
@@ -517,7 +529,7 @@ export default function Command(
       }
       if (targets.length === 0) {
         await showFailureToast(undefined, {
-          title: "No package.json in selection",
+          title: "No project in selection",
           message: "Pick a project from your recents instead.",
         });
         setPhase("picker");
