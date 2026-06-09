@@ -250,6 +250,8 @@ interface ServerItemProps {
   id: string;
   server: DevServer;
   terminalApp: Application;
+  // Unset when the user hasn't picked an editor; the action is hidden then.
+  editorApp?: Application;
   show: RowVisibility;
   onKill: () => void;
   onKillProject: () => void;
@@ -262,6 +264,7 @@ function ServerItem({
   id,
   server,
   terminalApp,
+  editorApp,
   show,
   onKill,
   onKillProject,
@@ -412,6 +415,15 @@ function ServerItem({
             )}
           </ActionPanel.Section>
           <ActionPanel.Section>
+            {editorApp && (
+              <Action.Open
+                title={`Open in ${editorApp.name}`}
+                icon={Icon.Code}
+                target={server.cwd}
+                application={editorApp}
+                shortcut={{ modifiers: ["cmd"], key: "e" }}
+              />
+            )}
             <Action.Open
               title={`Open in ${terminalApp.name}`}
               icon={Icon.Terminal}
@@ -1012,6 +1024,7 @@ export default function Command(
   }
 
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
+  const editorApp = prefs.editorApp;
   const [toolFilter, setToolFilter] = useState<string>("all");
 
   // Visibility prefs default to true so first-time users see everything.
@@ -1137,6 +1150,7 @@ export default function Command(
               id={String(server.pid)}
               server={server}
               terminalApp={terminalApp}
+              editorApp={editorApp}
               show={show}
               onKill={() => kill(server.pid)}
               onKillProject={() => killProject(projectKey)}

@@ -33,6 +33,13 @@
       "type": "appPicker",
       "description": "Which terminal to open when using \"Open in Terminal\". Defaults to macOS Terminal if unset.",
       "required": false
+    },
+    {
+      "name": "editorApp",
+      "title": "Editor App",
+      "type": "appPicker",
+      "description": "Which editor to open a project in with \"Open in Editor\" (e.g. VS Code, Cursor, Zed). The action is hidden when unset.",
+      "required": false
     }
   ],
   "commands": [

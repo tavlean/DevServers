@@ -198,6 +198,7 @@ interface RowProps {
   recent: RecentProject;
   framework?: string;
   terminalApp: Application;
+  editorApp?: Application;
   autoOpen: boolean;
   onRemove: (cwd: string) => Promise<void>;
 }
@@ -206,6 +207,7 @@ function RecentRow({
   recent,
   framework,
   terminalApp,
+  editorApp,
   autoOpen,
   onRemove,
 }: RowProps) {
@@ -270,6 +272,15 @@ function RecentRow({
         <ActionPanel>
           <Action title="Start Dev Server" icon={Icon.Play} onAction={start} />
           <ActionPanel.Section>
+            {editorApp && (
+              <Action.Open
+                title={`Open in ${editorApp.name}`}
+                icon={Icon.Code}
+                target={recent.cwd}
+                application={editorApp}
+                shortcut={{ modifiers: ["cmd"], key: "e" }}
+              />
+            )}
             <Action.Open
               title={`Open in ${terminalApp.name}`}
               icon={Icon.Terminal}
@@ -305,13 +316,14 @@ function RecentRow({
 interface PickerProps {
   autoOpen: boolean;
   terminalApp: Application;
+  editorApp?: Application;
 }
 
 // Picker view shown when there's no Finder selection. Lists recent
 // projects (excluding currently-running ones, which live in the
 // dashboard) and an always-present "Choose Folder…" entry for one-off
 // picks.
-function PickerView({ autoOpen, terminalApp }: PickerProps) {
+function PickerView({ autoOpen, terminalApp, editorApp }: PickerProps) {
   // Passive migration: every mount triggers an empty recordSeenBatch
   // which canonicalizes any non-symlink-resolved entries left over from
   // earlier builds, so the running-server filter below matches reliably.
@@ -428,6 +440,7 @@ function PickerView({ autoOpen, terminalApp }: PickerProps) {
               recent={r}
               framework={frameworkByCwd[r.cwd]}
               terminalApp={terminalApp}
+              editorApp={editorApp}
               autoOpen={autoOpen}
               onRemove={handleRemove}
             />
@@ -471,6 +484,7 @@ export default function Command(
   const autoOpen = prefs.autoOpenInBrowser ?? false;
   const confirmMulti = prefs.confirmMultiStart ?? true;
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
+  const editorApp = prefs.editorApp;
   const forcePicker = props.launchContext?.forcePicker ?? false;
 
   const [phase, setPhase] = useState<"checking" | "picker">(
@@ -548,7 +562,13 @@ export default function Command(
   }, [autoOpen, confirmMulti, forcePicker]);
 
   if (phase === "picker") {
-    return <PickerView autoOpen={autoOpen} terminalApp={terminalApp} />;
+    return (
+      <PickerView
+        autoOpen={autoOpen}
+        terminalApp={terminalApp}
+        editorApp={editorApp}
+      />
+    );
   }
 
   // Minimal placeholder while we resolve the Finder selection. Just the

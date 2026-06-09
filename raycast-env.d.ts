@@ -9,7 +9,9 @@
 
 type ExtensionPreferences = {
   /** Terminal App - Which terminal to open when using "Open in Terminal". Defaults to macOS Terminal if unset. */
-  "terminalApp"?: import("@raycast/api").Application
+  "terminalApp"?: import("@raycast/api").Application,
+  /** Editor App - Which editor to open a project in with "Open in Editor" (e.g. VS Code, Cursor, Zed). The action is hidden when unset. */
+  "editorApp"?: import("@raycast/api").Application
 }
 
 /** Preferences accessible in all the extension's commands */
