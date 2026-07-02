@@ -6,6 +6,7 @@ A keyboard-first way to manage and start your local dev servers from Raycast. Se
 
 - **Dev Servers**: the dashboard. A live, auto-refreshing list of every dev server currently running, grouped by project.
 - **Start Dev Server**: spin up a server from a Finder selection, a recently-seen project, or any folder you pick. The dashboard opens and shows it coming up.
+- **Dev Servers Menu Bar**: keep a tiny live indicator in the menu bar, with quick actions for running servers and a short list of recent projects to start.
 
 ## Dev Servers (dashboard)
 
@@ -42,6 +43,12 @@ The script picker tries `dev` → `start` → `develop` first, then scans script
 **Shopify projects** work too: a theme folder (marked by `layout/theme.liquid`, no `package.json` needed) starts with `shopify theme dev`, and an app root (`shopify.app.toml`) without a dev script falls back to `shopify app dev`. Scaffolded Shopify apps and Hydrogen storefronts start through their normal `dev` scripts. Because `shopify theme dev` insists on port 9292 and simply crashes when it's taken, starting a theme checks that port first and hands the CLI the next free one (via `SHOPIFY_FLAG_PORT`) when needed — so a second copy of a theme, like a git worktree next to your main checkout, starts cleanly alongside the first. One caveat: the Shopify CLI prompts for login and store selection on first use, which a background spawn can't answer; run `shopify theme dev --store <your-store>` once in a terminal, after which the CLI remembers the store and the extension starts it cleanly.
 
 **Picker row actions:** Start (`↵`), Open in Editor (`⌘E`, when the Editor App preference is set), Open in Terminal (`⌘T`), Show in Finder (`⌘⇧F`), Copy Path (`⌘C`), Remove from Recents (`⌃X`).
+
+## Menu Bar
+
+The menu bar command gives you a compact always-on view of the same running servers. Each project gets its own section, each server opens into a submenu, and the common actions are right there: open the URL, restart, kill, copy the URL or port, open the project in your editor, or jump to the terminal.
+
+It also carries a **Start** section with your most useful recent projects that are not currently running, so bringing a server back is a couple of clicks. The bottom actions open the full dashboard or the Start Dev Server picker when you need the larger workflow.
 
 ## Keyboard Shortcuts
 
@@ -83,6 +90,10 @@ Dashboard (Dev Servers):
 
 - **Open in browser when the port binds** auto-opens each new server's URL once it starts listening. Off by default.
 - **Confirm when starting multiple folders at once** asks before spawning more than one server from a multi-folder Finder selection. On by default.
+
+**Dev Servers Menu Bar**
+
+- **Show running-server count** shows the number of running dev servers next to the menu bar icon. On by default.
 
 ## How it differs from Port Manager
 

@@ -40,6 +40,11 @@ declare namespace Preferences {
   /** Confirmations - Show a confirmation alert before spawning more than one dev server from a multi-folder Finder selection */
   "confirmMultiStart": boolean
 }
+  /** Preferences accessible in the `menubar` command */
+  export type Menubar = ExtensionPreferences & {
+  /** Menu Bar - Show the number of running dev servers next to the menu bar icon */
+  "showCount": boolean
+}
 }
 
 declare namespace Arguments {
@@ -47,5 +52,7 @@ declare namespace Arguments {
   export type Index = {}
   /** Arguments passed to the `start` command */
   export type Start = {}
+  /** Arguments passed to the `menubar` command */
+  export type Menubar = {}
 }
 

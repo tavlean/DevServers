@@ -1,5 +1,11 @@
 # Dev Servers Changelog
 
+## [Menu Bar Command] - {PR_MERGE_DATE}
+
+- Adds **Dev Servers Menu Bar**, a compact menu bar command that shows running dev servers by project and keeps the count visible when you want it.
+- Each running server gets quick actions for opening, restarting, killing, copying the URL or port, and jumping into your editor or terminal.
+- Recent stopped projects appear in a Start section, ranked by use, and hand off to the dashboard so the normal startup toast and progress flow stay intact.
+
 ## [Automatic port fallback for Shopify themes] - {PR_MERGE_DATE}
 
 - **Two copies of a theme now run side by side.** `shopify theme dev` has no next-free-port fallback: when its fixed default port 9292 is taken (say, by the main checkout while you start a git worktree of the same theme), the CLI just dies with `EADDRINUSE` ([Shopify/cli#5554](https://github.com/Shopify/cli/issues/5554)). Starting a theme now probes the default port first and, when it's taken, exports `SHOPIFY_FLAG_PORT` with the next free one. Because it's an environment variable, the fix reaches the CLI through any wrapping — a bare theme root started as `shopify theme dev` and a `dev` script that nests it under `concurrently` both come up on their own port. A `--port` written explicitly into your own script still wins.
