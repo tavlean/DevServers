@@ -5,7 +5,7 @@
 - Adds **Dev Servers Menu Bar**, a compact menu bar command that shows running dev servers by project and keeps the count visible when you want it.
 - Each running server gets quick actions for opening, restarting, killing, copying the URL or port, and jumping into your editor or terminal.
 - Recent stopped projects appear in a Start section, ranked by use, and hand off to the dashboard so the normal startup toast and progress flow stay intact.
-- Projects with two or more servers get a **Kill All N Servers** item at the bottom of their section. It acts on click without a dialog (menus can't confirm), so the label carries the count and single-server projects don't show it at all.
+- Projects with two or more servers get a kill-all item at the bottom of their section: "Kill Both Servers" for a pair, "Kill All 3 Servers" beyond. It acts on click without a dialog (menus can't confirm), so the label always names the blast radius and single-server projects don't show it at all.
 
 ## [Automatic port fallback for Shopify themes] - 2026-07-02
 

@@ -31,7 +31,7 @@ See every dev server running on your Mac, grouped by project. Kill, restart, ope
 
 - Live count of running servers next to the icon (toggleable)
 - Each server gets a submenu: open, restart, kill, copy URL or port, editor, terminal
-- Projects running two or more servers get a one-click **Kill All N Servers** item
+- Projects running several servers get a one-click kill-all item ("Kill Both Servers", "Kill All 3 Servers")
 - A **Start** section lists your recent projects, ranked by how often you start them
 - Starts hand off to the dashboard so you see the usual progress toast
 

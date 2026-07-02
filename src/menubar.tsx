@@ -241,7 +241,11 @@ export default function Command() {
               // item entirely for single-server projects (where the per-server
               // Kill already covers it).
               <MenuBarExtra.Item
-                title={`Kill All ${projectServers.length} Servers`}
+                title={
+                  projectServers.length === 2
+                    ? "Kill Both Servers"
+                    : `Kill All ${projectServers.length} Servers`
+                }
                 icon={Icon.Trash}
                 onAction={() => {
                   void (async () => {
