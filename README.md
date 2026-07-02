@@ -46,7 +46,7 @@ The script picker tries `dev` → `start` → `develop` first, then scans script
 
 ## Menu Bar
 
-The menu bar command gives you a compact always-on view of the same running servers. Each project gets its own section, each server opens into a submenu, and the common actions are right there: open the URL, restart, kill, copy the URL or port, open the project in your editor, or jump to the terminal.
+The menu bar command gives you a compact always-on view of the same running servers. Each project gets its own section, each server opens into a submenu, and the common actions are right there: open the URL, restart, kill, copy the URL or port, open the project in your editor, or jump to the terminal. Projects running two or more servers also get a **Kill All N Servers** item at the bottom of their section; it acts immediately (menus can't show confirmation dialogs), with the count in the label so the blast radius is always visible.
 
 It also carries a **Start** section with your most useful recent projects that are not currently running, so bringing a server back is a couple of clicks. The bottom actions open the full dashboard or the Start Dev Server picker when you need the larger workflow.
 

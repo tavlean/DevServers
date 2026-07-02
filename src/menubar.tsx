@@ -235,6 +235,27 @@ export default function Command() {
                 />
               </MenuBarExtra.Submenu>
             ))}
+            {projectServers.length >= 2 ? (
+              // No confirmAlert in the menu bar context, so the guardrails are
+              // the label carrying the count, bottom placement, and hiding the
+              // item entirely for single-server projects (where the per-server
+              // Kill already covers it).
+              <MenuBarExtra.Item
+                title={`Kill All ${projectServers.length} Servers`}
+                icon={Icon.Trash}
+                onAction={() => {
+                  void (async () => {
+                    // allSettled: a server can die between menu open and click,
+                    // and one stale pid must not stop the rest of the project.
+                    await Promise.allSettled(
+                      projectServers.map((server) => killServer(server.pid)),
+                    );
+                    await refresh();
+                    pokeMenuBar();
+                  })();
+                }}
+              />
+            ) : null}
           </MenuBarExtra.Section>
         ))
       )}
