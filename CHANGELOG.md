@@ -1,5 +1,11 @@
 # Dev Servers Changelog
 
+## [Helper binaries no longer masquerade as dev servers] - {PR_MERGE_DATE}
+
+- Native helper binaries that dev servers spawn internally no longer surface with raw package names like `@cloudflare/workerd-darwin-arm64`. Platform-binary packages (npm's `<pkg>-<os>-<arch>` convention: workerd, esbuild, rollup, swc, sass-embedded, …) are never the tool the user chose, so detection now recognizes that shape and climbs the process tree to the dev server that spawned the helper, labeling it with the parent's tool instead. If no ancestor resolves, the platform suffix is stripped (`workerd`, not `workerd-darwin-arm64`).
+- Helper processes bound to OS-assigned ephemeral ports are now hidden entirely when they're children of an already-listed server: the workerd instances the Cloudflare Vite plugin runs under `vite dev` used to appear as two extra "servers" of the same project on meaningless 5-digit ports. Helpers on deliberately configured ports (workerd on 8787 under `wrangler dev`, a Hydrogen storefront under `shopify app dev`) remain visible, since those are the URLs you actually open.
+- New tool tags with Cloudflare styling: Wrangler, Workerd, and Miniflare.
+
 ## [Menu bar honors the auto-open-in-browser setting] - {PR_MERGE_DATE}
 
 - Starting a project directly from the menu bar's **Start** section now opens its URL in the browser when the port binds, matching the Start Dev Server command. Previously the menu bar always skipped auto-open regardless of your setting.
