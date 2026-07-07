@@ -152,7 +152,25 @@ async function fetchWithTimeout(
 //
 // SVG uses URL-encoded payload, raster uses base64. That split mirrors what
 // @raycast/utils does internally for its own SVG icons.
-async function fetchFaviconDataUri(url: string): Promise<string | undefined> {
+// Some SVG favicons are authored as a single-color glyph that inherits the
+// page's text color through `currentColor` and declare no color of their own.
+// Raycast renders a data-URI SVG with no surrounding color context, so those
+// collapse to a flat black square. Detect that specific case — currentColor
+// AND no explicit fill/stroke/gradient color — so the resolver can prefer a
+// real colored icon. A colored SVG that merely mentions currentColor on one
+// sub-path is left alone, to avoid regressing icons that render fine today.
+function isMonochromeSvg(svg: string): boolean {
+  if (!/currentColor/i.test(svg)) return false;
+  const hasExplicitColor =
+    /(?:fill|stroke|stop-color)\s*[:=]\s*["']?\s*(?:#|rgb|hsl)/i.test(svg) ||
+    /<(?:linear|radial)Gradient\b/i.test(svg);
+  return !hasExplicitColor;
+}
+
+async function fetchFaviconDataUri(
+  url: string,
+  opts: { rejectMonochromeSvg?: boolean } = {},
+): Promise<string | undefined> {
   const res = await fetchWithTimeout(url);
   if (!res || !res.ok) return undefined;
   const ct = (res.headers.get("content-type") ?? "")
@@ -162,35 +180,71 @@ async function fetchFaviconDataUri(url: string): Promise<string | undefined> {
   if (!ct.startsWith("image/")) return undefined;
   if (ct.includes("svg")) {
     const svg = await res.text();
+    // A monochrome/currentColor SVG would show as a black square; let the
+    // caller fall through to a colored raster icon or the tinted fallback.
+    if (opts.rejectMonochromeSvg && isMonochromeSvg(svg)) return undefined;
     return `data:image/svg+xml,${encodeURIComponent(svg)}`;
   }
   const buf = Buffer.from(await res.arrayBuffer());
   return `data:${ct};base64,${buf.toString("base64")}`;
 }
 
-// Resolve the best favicon for a localhost dev server. Tries in order:
-//  1. <link rel="icon"> in the page HTML
-//  2. /favicon.ico (the convention every framework starter ships with)
-//  3. undefined → caller renders a framework-tinted globe instead.
+// Resolve the best favicon for a localhost dev server. Collects every icon
+// <link> in the page HTML, then fetches them best-first instead of taking the
+// first in document order — that order is arbitrary and routinely lists a
+// monochrome Safari mask-icon (a black silhouette) ahead of the real icon,
+// which is why some favicons render as a black blob today. Ranking, high→low:
+//   3. colored raster — apple-touch-icon, or an icon whose type/extension is
+//      png/ico/jpg/webp/gif. Raster keeps its own colors, so it never blackens.
+//   2. SVG icons — used only when they aren't currentColor-monochrome.
+//   1. anything else icon-ish (type/extension unknown; content-type decides).
+// `rel="mask-icon"` is skipped outright (monochrome by design). Falls back to
+// /favicon.ico, then undefined → caller renders a framework-tinted globe.
 async function detectFaviconUrl(port: string): Promise<string | undefined> {
   const origin = `http://localhost:${port}`;
 
   const html = await fetchWithTimeout(`${origin}/`).then((r) =>
     r ? r.text() : null,
   );
+
+  const candidates: Array<{ url: string; rank: number }> = [];
   if (html) {
     const linkTags = html.match(/<link[^>]+>/gi) ?? [];
     for (const tag of linkTags) {
-      if (!/rel=["'][^"']*icon[^"']*["']/i.test(tag)) continue;
-      const hrefMatch = tag.match(/href=["']([^"']+)["']/i);
-      if (!hrefMatch) continue;
-      const href = hrefMatch[1];
+      const rel = tag.match(/rel=["']([^"']+)["']/i)?.[1].toLowerCase();
+      if (!rel) continue;
+      // Safari's pinned-tab icon is a black silhouette meant to be tinted by
+      // the browser; taken as-is it renders as a black blob.
+      if (rel.includes("mask-icon")) continue;
+      const isAppleTouch = rel.includes("apple-touch-icon");
+      if (!isAppleTouch && !/\bicon\b/.test(rel)) continue;
+
+      const href = tag.match(/href=["']([^"']+)["']/i)?.[1];
+      if (!href) continue;
       const url = href.startsWith("http")
         ? href
         : `${origin}${href.startsWith("/") ? href : `/${href}`}`;
-      const dataUri = await fetchFaviconDataUri(url);
-      if (dataUri) return dataUri;
+
+      const type = (
+        tag.match(/type=["']([^"']+)["']/i)?.[1] ?? ""
+      ).toLowerCase();
+      const isSvg = type.includes("svg") || /\.svg(?:[?#]|$)/i.test(url);
+      const isRaster =
+        !isSvg &&
+        (isAppleTouch ||
+          type.startsWith("image/") ||
+          /\.(?:png|ico|jpe?g|webp|gif)(?:[?#]|$)/i.test(url));
+      candidates.push({ url, rank: isRaster ? 3 : isSvg ? 2 : 1 });
     }
+  }
+
+  // Array.sort is stable in V8, so document order is preserved within a rank.
+  candidates.sort((a, b) => b.rank - a.rank);
+  for (const c of candidates) {
+    const dataUri = await fetchFaviconDataUri(c.url, {
+      rejectMonochromeSvg: true,
+    });
+    if (dataUri) return dataUri;
   }
 
   return fetchFaviconDataUri(`${origin}/favicon.ico`);
