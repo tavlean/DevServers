@@ -70,7 +70,10 @@ async function launchStartPicker(): Promise<void> {
   });
 }
 
-async function launchRecent(recent: RecentProject): Promise<void> {
+async function launchRecent(
+  recent: RecentProject,
+  autoOpen: boolean,
+): Promise<void> {
   await launchCommand({
     name: "index",
     type: LaunchType.UserInitiated,
@@ -78,7 +81,7 @@ async function launchRecent(recent: RecentProject): Promise<void> {
       spawn: {
         targets: [{ cwd: recent.cwd, name: recent.projectName }],
         confirmMulti: false,
-        autoOpen: false,
+        autoOpen,
         showAutoOpenHint: false,
       },
     },
@@ -134,6 +137,7 @@ export default function Command() {
 
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const editorApp = prefs.editorApp;
+  const autoOpen = prefs.autoOpenInBrowser ?? false;
   const title =
     (prefs.showCount ?? true) && servers.length > 0
       ? String(servers.length)
@@ -275,7 +279,7 @@ export default function Command() {
               onAction={() => {
                 void (async () => {
                   await visitItem(recent);
-                  await launchRecent(recent);
+                  await launchRecent(recent, autoOpen);
                 })();
               }}
             />

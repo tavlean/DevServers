@@ -8,6 +8,8 @@
 /* eslint-disable @typescript-eslint/ban-types */
 
 type ExtensionPreferences = {
+  /** After Start - Once a new dev server starts listening, automatically open its URL in your default browser. Applies whether you start from the Start Dev Server command, the dashboard, or the menu bar. */
+  "autoOpenInBrowser": boolean,
   /** Terminal App - Which terminal to open when using "Open in Terminal". Defaults to macOS Terminal if unset. */
   "terminalApp"?: import("@raycast/api").Application,
   /** Editor App - Which editor to open a project in with "Open in Editor" (e.g. VS Code, Cursor, Zed). The action is hidden when unset. */
@@ -35,8 +37,6 @@ declare namespace Preferences {
 }
   /** Preferences accessible in the `start` command */
   export type Start = ExtensionPreferences & {
-  /** After Start - Once the new dev server starts listening, automatically open its URL in your default browser */
-  "autoOpenInBrowser": boolean,
   /** Confirmations - Show a confirmation alert before spawning more than one dev server from a multi-folder Finder selection */
   "confirmMultiStart": boolean
 }

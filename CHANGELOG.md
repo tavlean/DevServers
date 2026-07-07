@@ -1,5 +1,10 @@
 # Dev Servers Changelog
 
+## [Menu bar honors the auto-open-in-browser setting] - {PR_MERGE_DATE}
+
+- Starting a project directly from the menu bar's **Start** section now opens its URL in the browser when the port binds, matching the Start Dev Server command. Previously the menu bar always skipped auto-open regardless of your setting.
+- "Open in browser when the port binds" is now an extension-wide preference instead of living only under the Start Dev Server command, so every start surface (Start command, dashboard, menu bar) shares one setting. Because the preference moved from the command level to the extension level, you may need to re-enable it once in the extension's preferences.
+
 ## [Fix tool detection for pnpm and shim-relative launch paths] - {PR_MERGE_DATE}
 
 - Servers launched through pnpm's virtual store or a shim's relative self-exec path no longer show a raw filesystem path as their tool tag. Vite (and any framework) invoked as `node_modules/.bin/../vite/bin/vite.js` or `node_modules/.bin/../.pnpm/vite@<version>_<peers>/node_modules/vite/bin/vite.js` now resolves to its real package name: tool detection normalizes the script path and reads the package directory adjacent to the last `node_modules` segment, instead of pattern-matching the command text. Scoped packages (`@scope/pkg`) and pnpm's encoded scoped store entries (`@scope+pkg@version`) resolve correctly too.
