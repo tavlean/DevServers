@@ -6,10 +6,14 @@
 - Helper processes bound to OS-assigned ephemeral ports are now hidden entirely when they're children of an already-listed server: the workerd instances the Cloudflare Vite plugin runs under `vite dev` used to appear as two extra "servers" of the same project on meaningless 5-digit ports. Helpers on deliberately configured ports (workerd on 8787 under `wrangler dev`, a Hydrogen storefront under `shopify app dev`) remain visible, since those are the URLs you actually open.
 - New tool tags with Cloudflare styling: Wrangler, Workerd, and Miniflare.
 
-## [Menu bar honors the auto-open-in-browser setting] - {PR_MERGE_DATE}
+## [Menu bar improvements] - {PR_MERGE_DATE}
 
 - Starting a project directly from the menu bar's **Start** section now opens its URL in the browser when the port binds, matching the Start Dev Server command. Previously the menu bar always skipped auto-open regardless of your setting.
 - "Open in browser when the port binds" is now an extension-wide preference instead of living only under the Start Dev Server command, so every start surface (Start command, dashboard, menu bar) shares one setting. Because the preference moved from the command level to the extension level, you may need to re-enable it once in the extension's preferences.
+- **Running servers now show their favicon in the menu bar** (reusing the one the dashboard already resolved) instead of a plain colored dot. The menu bar can only render raster favicons (PNG/ICO) in color, so projects whose favicon is an SVG — or that haven't been opened in the dashboard yet — keep the framework-tinted dot.
+- **Fixed favicons that rendered as a solid black square.** In the dashboard, the resolver now skips Safari's monochrome `mask-icon`, prefers colored raster icons (apple-touch-icon, PNG, ICO) over SVGs, and ignores `currentColor`-only SVGs, so it lands on the real colored icon instead of the first monochrome one in the page. In the menu bar — which renders SVG images as a black template — an SVG favicon now falls back to the framework-tinted dot instead of showing black.
+- Stopped projects in the menu bar's Start section now fall back to a **framework-tinted folder** (matching the Start picker) instead of a stark grey one.
+- The **Kill** and **Kill All** actions now use a red icon to flag them as destructive.
 
 ## [Fix tool detection for pnpm and shim-relative launch paths] - 2026-07-07
 

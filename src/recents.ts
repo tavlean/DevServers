@@ -16,6 +16,11 @@ export interface RecentProject {
   cwd: string; // canonical path (realpath-resolved)
   projectName: string;
   branch?: string;
+  // Framework/tool tag (vite, next, shopify-theme, …) captured while the
+  // project was running. Used to tint the fallback icon when no favicon is
+  // cached. Optional: picker-recorded and pre-upgrade entries won't have it
+  // until the dashboard sees the project running again.
+  tool?: string;
   // Cached favicon data URI, populated by the dashboard whenever it
   // successfully resolves one for a running server. Lets the picker
   // render the project's real icon even when the server is stopped.
@@ -52,6 +57,7 @@ export function toRecent(s: DevServer): Omit<RecentProject, "lastSeen"> {
     cwd: s.cwd,
     projectName: s.projectName,
     branch: s.branch,
+    tool: s.tool,
   };
 }
 

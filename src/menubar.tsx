@@ -1,6 +1,8 @@
 import {
   Clipboard,
+  Color,
   Icon,
+  Image,
   LaunchType,
   MenuBarExtra,
   getPreferenceValues,
@@ -43,6 +45,32 @@ function serverHost(server: DevServer): string {
 function serverTitle(server: DevServer): string {
   const branch = server.branch ? ` (${server.branch})` : "";
   return `${serverHost(server)}${branch}`;
+}
+
+// Raycast renders SVG images in the menu bar as a monochrome template — they
+// show up as a solid black blob — whereas raster images (PNG/ICO) keep their
+// color. A cached favicon is a data URI; if it's an SVG we can't use it here,
+// so callers treat it as "no favicon" and fall back to the tinted dot/folder.
+// (The dashboard renders in a List, which shows SVGs in full color, so its
+// favicons are unaffected.)
+function isSvgDataUri(uri: string): boolean {
+  return uri.startsWith("data:image/svg");
+}
+
+// Icon for a running server row. Reuses the favicon the dashboard already
+// resolved and cached onto the project's recents entry — the menu bar never
+// fetches favicons itself, to stay cheap on its background interval. Projects
+// with no usable cached favicon (never opened in the dashboard, or only an SVG
+// favicon which the menu bar can't render in color) fall back to the
+// framework-tinted dot.
+function serverIcon(
+  server: DevServer,
+  faviconByCwd: Map<string, string>,
+): Image.ImageLike {
+  const favicon = faviconByCwd.get(canonicalCwd(server.cwd));
+  return favicon
+    ? { source: favicon, fallback: Icon.CircleFilled }
+    : { source: Icon.CircleFilled, tintColor: toolColor(server.tool) };
 }
 
 function groupByProject(servers: DevServer[]): DevServer[][] {
@@ -118,6 +146,20 @@ export default function Command() {
     [servers],
   );
 
+  // Raster favicons the dashboard cached onto recents, keyed by canonical cwd,
+  // so running rows can show the project's real icon without a network fetch.
+  // SVG favicons are skipped here — the menu bar renders them as a black blob
+  // (see isSvgDataUri), so those rows keep the framework-tinted dot instead.
+  const faviconByCwd = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const recent of recents) {
+      if (recent.favicon && !isSvgDataUri(recent.favicon)) {
+        map.set(canonicalCwd(recent.cwd), recent.favicon);
+      }
+    }
+    return map;
+  }, [recents]);
+
   const startableRecents = useMemo(
     () =>
       recents
@@ -162,10 +204,7 @@ export default function Command() {
               <MenuBarExtra.Submenu
                 key={`${server.pid}:${server.port}`}
                 title={serverTitle(server)}
-                icon={{
-                  source: Icon.CircleFilled,
-                  tintColor: toolColor(server.tool),
-                }}
+                icon={serverIcon(server, faviconByCwd)}
               >
                 <MenuBarExtra.Item
                   title="Open in Browser"
@@ -196,7 +235,7 @@ export default function Command() {
                 />
                 <MenuBarExtra.Item
                   title="Kill"
-                  icon={Icon.Trash}
+                  icon={{ source: Icon.Trash, tintColor: Color.Red }}
                   onAction={() => {
                     void (async () => {
                       await killServer(server.pid);
@@ -248,7 +287,7 @@ export default function Command() {
                     ? "Kill Both Servers"
                     : `Kill All ${projectServers.length} Servers`
                 }
-                icon={Icon.Trash}
+                icon={{ source: Icon.Trash, tintColor: Color.Red }}
                 onAction={() => {
                   void (async () => {
                     // allSettled: a server can die between menu open and click,
@@ -275,7 +314,16 @@ export default function Command() {
               key={recent.cwd}
               title={recent.projectName}
               subtitle={recent.branch}
-              icon={recent.favicon ?? Icon.Folder}
+              icon={
+                recent.favicon && !isSvgDataUri(recent.favicon)
+                  ? recent.favicon
+                  : {
+                      source: Icon.Folder,
+                      tintColor: recent.tool
+                        ? toolColor(recent.tool)
+                        : Color.SecondaryText,
+                    }
+              }
               onAction={() => {
                 void (async () => {
                   await visitItem(recent);
