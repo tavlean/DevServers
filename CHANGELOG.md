@@ -1,20 +1,18 @@
 # Dev Servers Changelog
 
-## [Helper binaries no longer masquerade as dev servers] - {PR_MERGE_DATE}
+## [Menu bar polish and sharper tool detection] - {PR_MERGE_DATE}
 
-- Native helper binaries that dev servers spawn internally no longer surface with raw package names like `@cloudflare/workerd-darwin-arm64`. Platform-binary packages (npm's `<pkg>-<os>-<arch>` convention: workerd, esbuild, rollup, swc, sass-embedded, …) are never the tool the user chose, so detection now recognizes that shape and climbs the process tree to the dev server that spawned the helper, labeling it with the parent's tool instead. If no ancestor resolves, the platform suffix is stripped (`workerd`, not `workerd-darwin-arm64`).
-- Helper processes bound to OS-assigned ephemeral ports are now hidden entirely when they're children of an already-listed server: the workerd instances the Cloudflare Vite plugin runs under `vite dev` used to appear as two extra "servers" of the same project on meaningless 5-digit ports. Helpers on deliberately configured ports (workerd on 8787 under `wrangler dev`, a Hydrogen storefront under `shopify app dev`) remain visible, since those are the URLs you actually open.
+### Menu bar
+
+- **Running servers now show their real favicon** instead of a colored dot, and stopped projects in the Start section show a framework-tinted folder instead of a stark grey one.
+- **Favicons render in color instead of a black square.** The resolver now skips Safari's monochrome `mask-icon`, prefers colored raster icons (apple-touch-icon, PNG, ICO), and ignores `currentColor`-only SVGs, so it lands on the real icon. Because the menu bar can't render SVGs in color, it uses a separate raster variant — pulled from the page or from conventional paths (`/favicon.ico`, `/apple-touch-icon.png`) — so SVG-favicon sites still show a real icon there, falling back to a tinted dot only when no raster exists anywhere.
+- Starting a project from the menu bar's Start section now opens it in the browser when the port binds, matching the Start Dev Server command. "Open in browser when the port binds" is now an extension-wide preference shared by every start surface (Start command, dashboard, menu bar); since it moved from the command to the extension level, you may need to re-enable it once.
+- The Kill and Kill All actions use a red icon to flag them as destructive, and menu bar actions now use a consistent set of polished Nucleo icons with bundled light/dark variants.
+
+### Tool detection
+
+- **Native helper binaries no longer masquerade as separate servers.** Platform-binary packages (npm's `<pkg>-<os>-<arch>` convention: workerd, esbuild, rollup, swc, sass-embedded, …) are never the tool you chose, so detection recognizes that shape and climbs the process tree to label the helper with its parent's tool — or strips the platform suffix when no ancestor resolves (`workerd`, not `workerd-darwin-arm64`). Helpers on OS-assigned ephemeral ports under an already-listed server (e.g. the workerd instances the Cloudflare Vite plugin runs under `vite dev`) are hidden; helpers on deliberately configured ports (workerd on 8787 under `wrangler dev`, a Hydrogen storefront under `shopify app dev`) stay visible, since those are the URLs you actually open.
 - New tool tags with Cloudflare styling: Wrangler, Workerd, and Miniflare.
-
-## [Menu bar improvements] - {PR_MERGE_DATE}
-
-- Starting a project directly from the menu bar's **Start** section now opens its URL in the browser when the port binds, matching the Start Dev Server command. Previously the menu bar always skipped auto-open regardless of your setting.
-- "Open in browser when the port binds" is now an extension-wide preference instead of living only under the Start Dev Server command, so every start surface (Start command, dashboard, menu bar) shares one setting. Because the preference moved from the command level to the extension level, you may need to re-enable it once in the extension's preferences.
-- **Running servers now show their favicon in the menu bar** (reusing the one the dashboard already resolved) instead of a plain colored dot. The menu bar can only render raster favicons (PNG/ICO) in color, so projects whose favicon is an SVG — or that haven't been opened in the dashboard yet — keep the framework-tinted dot.
-- **Fixed favicons that rendered as a solid black square.** In the dashboard, the resolver now skips Safari's monochrome `mask-icon`, prefers colored raster icons (apple-touch-icon, PNG, ICO) over SVGs, and ignores `currentColor`-only SVGs, so it lands on the real colored icon instead of the first monochrome one in the page. In the menu bar — which renders SVG images as a black template — an SVG favicon now falls back to the framework-tinted dot instead of showing black.
-- Stopped projects in the menu bar's Start section now fall back to a **framework-tinted folder** (matching the Start picker) instead of a stark grey one.
-- The **Kill** and **Kill All** actions now use a red icon to flag them as destructive.
-- Menu bar actions now use a consistent set of polished Nucleo SVG icons, with bundled light/dark variants so they stay crisp in both Raycast themes.
 
 ## [Fix tool detection for pnpm and shim-relative launch paths] - 2026-07-07
 
