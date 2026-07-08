@@ -1,7 +1,6 @@
 import {
   Clipboard,
   Color,
-  Icon,
   Image,
   LaunchType,
   MenuBarExtra,
@@ -47,6 +46,24 @@ function serverTitle(server: DevServer): string {
   return `${serverHost(server)}${branch}`;
 }
 
+function menuIconSource(name: string): Image.Source {
+  return {
+    light: `menubar-${name}.svg`,
+    dark: `menubar-${name}@dark.svg`,
+  };
+}
+
+function menuIcon(name: string): Image.ImageLike {
+  return { source: menuIconSource(name) };
+}
+
+function tintedMenuIcon(
+  name: string,
+  tintColor: Color.ColorLike,
+): Image.ImageLike {
+  return { source: menuIconSource(name), tintColor };
+}
+
 // Raycast renders SVG images in the menu bar as a monochrome template — they
 // show up as a solid black blob — whereas raster images (PNG/ICO) keep their
 // color. A cached favicon is a data URI; if it's an SVG we can't use it here,
@@ -62,15 +79,15 @@ function isSvgDataUri(uri: string): boolean {
 // fetches favicons itself, to stay cheap on its background interval. Projects
 // with no usable cached favicon (never opened in the dashboard, or only an SVG
 // favicon which the menu bar can't render in color) fall back to the
-// framework-tinted dot.
+// framework-tinted server glyph.
 function serverIcon(
   server: DevServer,
   faviconByCwd: Map<string, string>,
 ): Image.ImageLike {
   const favicon = faviconByCwd.get(canonicalCwd(server.cwd));
   return favicon
-    ? { source: favicon, fallback: Icon.CircleFilled }
-    : { source: Icon.CircleFilled, tintColor: toolColor(server.tool) };
+    ? { source: favicon, fallback: menuIconSource("server") }
+    : tintedMenuIcon("server", toolColor(server.tool));
 }
 
 function groupByProject(servers: DevServer[]): DevServer[][] {
@@ -187,7 +204,7 @@ export default function Command() {
 
   return (
     <MenuBarExtra
-      icon={Icon.Bolt}
+      icon={menuIcon("server")}
       title={title}
       tooltip="Dev Servers"
       isLoading={isLoading}
@@ -208,7 +225,7 @@ export default function Command() {
               >
                 <MenuBarExtra.Item
                   title="Open in Browser"
-                  icon={Icon.Globe}
+                  icon={menuIcon("open-browser")}
                   onAction={() => {
                     void open(server.url);
                   }}
@@ -216,7 +233,7 @@ export default function Command() {
                 {server.customUrls && server.customUrls.length > 0 ? (
                   <MenuBarExtra.Item
                     title="Open Localhost URL"
-                    icon={Icon.Link}
+                    icon={menuIcon("local-link")}
                     onAction={() => {
                       void open(server.localUrl);
                     }}
@@ -225,7 +242,7 @@ export default function Command() {
                 <MenuBarExtra.Separator />
                 <MenuBarExtra.Item
                   title="Restart"
-                  icon={Icon.ArrowClockwise}
+                  icon={menuIcon("restart")}
                   onAction={() => {
                     void (async () => {
                       await restartServer(server);
@@ -235,7 +252,7 @@ export default function Command() {
                 />
                 <MenuBarExtra.Item
                   title="Kill"
-                  icon={{ source: Icon.Trash, tintColor: Color.Red }}
+                  icon={tintedMenuIcon("kill", Color.Red)}
                   onAction={() => {
                     void (async () => {
                       await killServer(server.pid);
@@ -246,14 +263,14 @@ export default function Command() {
                 <MenuBarExtra.Separator />
                 <MenuBarExtra.Item
                   title="Copy URL"
-                  icon={Icon.Clipboard}
+                  icon={menuIcon("copy-url")}
                   onAction={() => {
                     void Clipboard.copy(server.url);
                   }}
                 />
                 <MenuBarExtra.Item
                   title="Copy Port"
-                  icon={Icon.NumberList}
+                  icon={menuIcon("copy-port")}
                   onAction={() => {
                     void Clipboard.copy(server.port);
                   }}
@@ -261,7 +278,7 @@ export default function Command() {
                 {editorApp ? (
                   <MenuBarExtra.Item
                     title="Open in Editor"
-                    icon={Icon.Code}
+                    icon={menuIcon("editor")}
                     onAction={() => {
                       void open(server.cwd, editorApp);
                     }}
@@ -269,7 +286,7 @@ export default function Command() {
                 ) : null}
                 <MenuBarExtra.Item
                   title="Open in Terminal"
-                  icon={Icon.Terminal}
+                  icon={menuIcon("terminal")}
                   onAction={() => {
                     void open(server.cwd, terminalApp);
                   }}
@@ -287,7 +304,7 @@ export default function Command() {
                     ? "Kill Both Servers"
                     : `Kill All ${projectServers.length} Servers`
                 }
-                icon={{ source: Icon.Trash, tintColor: Color.Red }}
+                icon={tintedMenuIcon("kill", Color.Red)}
                 onAction={() => {
                   void (async () => {
                     // allSettled: a server can die between menu open and click,
@@ -317,12 +334,12 @@ export default function Command() {
               icon={
                 recent.favicon && !isSvgDataUri(recent.favicon)
                   ? recent.favicon
-                  : {
-                      source: Icon.Folder,
-                      tintColor: recent.tool
+                  : tintedMenuIcon(
+                      "folder",
+                      recent.tool
                         ? toolColor(recent.tool)
                         : Color.SecondaryText,
-                    }
+                    )
               }
               onAction={() => {
                 void (async () => {
@@ -338,14 +355,14 @@ export default function Command() {
       <MenuBarExtra.Section>
         <MenuBarExtra.Item
           title="Open Dashboard"
-          icon={Icon.Window}
+          icon={menuIcon("dashboard")}
           onAction={() => {
             void launchDashboard();
           }}
         />
         <MenuBarExtra.Item
           title="Start Dev Server…"
-          icon={Icon.Plus}
+          icon={menuIcon("start")}
           onAction={() => {
             void launchStartPicker();
           }}

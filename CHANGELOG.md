@@ -14,6 +14,7 @@
 - **Fixed favicons that rendered as a solid black square.** In the dashboard, the resolver now skips Safari's monochrome `mask-icon`, prefers colored raster icons (apple-touch-icon, PNG, ICO) over SVGs, and ignores `currentColor`-only SVGs, so it lands on the real colored icon instead of the first monochrome one in the page. In the menu bar — which renders SVG images as a black template — an SVG favicon now falls back to the framework-tinted dot instead of showing black.
 - Stopped projects in the menu bar's Start section now fall back to a **framework-tinted folder** (matching the Start picker) instead of a stark grey one.
 - The **Kill** and **Kill All** actions now use a red icon to flag them as destructive.
+- Menu bar actions now use a consistent set of polished Nucleo SVG icons, with bundled light/dark variants so they stay crisp in both Raycast themes.
 
 ## [Fix tool detection for pnpm and shim-relative launch paths] - 2026-07-07
 
