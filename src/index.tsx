@@ -144,14 +144,6 @@ async function fetchWithTimeout(
   }
 }
 
-// Fetch a favicon and return it as an inline data URI, or undefined if the URL
-// doesn't serve an image. Inlining the bytes (rather than handing Raycast a
-// URL to fetch) sidesteps CORS, since some dev servers (notably Astro) don't set
-// Access-Control-Allow-Origin on static assets, and Raycast's image loader
-// refuses those.
-//
-// SVG uses URL-encoded payload, raster uses base64. That split mirrors what
-// @raycast/utils does internally for its own SVG icons.
 // Some SVG favicons are authored as a single-color glyph that inherits the
 // page's text color through `currentColor` and declare no color of their own.
 // Raycast renders a data-URI SVG with no surrounding color context, so those
@@ -167,6 +159,14 @@ function isMonochromeSvg(svg: string): boolean {
   return !hasExplicitColor;
 }
 
+// Fetch a favicon and return it as an inline data URI, or undefined if the URL
+// doesn't serve an image. Inlining the bytes (rather than handing Raycast a
+// URL to fetch) sidesteps CORS, since some dev servers (notably Astro) don't set
+// Access-Control-Allow-Origin on static assets, and Raycast's image loader
+// refuses those.
+//
+// SVG uses URL-encoded payload, raster uses base64. That split mirrors what
+// @raycast/utils does internally for its own SVG icons.
 async function fetchFaviconDataUri(
   url: string,
   opts: { rejectMonochromeSvg?: boolean } = {},
@@ -189,18 +189,30 @@ async function fetchFaviconDataUri(
   return `data:${ct};base64,${buf.toString("base64")}`;
 }
 
-// Resolve the best favicon for a localhost dev server. Collects every icon
-// <link> in the page HTML, then fetches them best-first instead of taking the
-// first in document order — that order is arbitrary and routinely lists a
-// monochrome Safari mask-icon (a black silhouette) ahead of the real icon,
-// which is why some favicons render as a black blob today. Ranking, high→low:
+interface ResolvedFavicons {
+  // Best overall icon for the dashboard's List, which renders SVGs in color.
+  best?: string;
+  // Raster-only icon (PNG/ICO) for the menu bar, which renders SVG images as a
+  // monochrome black template and so can't display an SVG favicon in color.
+  raster?: string;
+}
+
+// Resolve favicons for a localhost dev server. Collects every icon <link> in
+// the page HTML and fetches them best-first — that document order is arbitrary
+// and routinely lists a monochrome Safari mask-icon (a black silhouette) ahead
+// of the real icon, which is why some favicons render as a black blob. Ranking,
+// high→low:
 //   3. colored raster — apple-touch-icon, or an icon whose type/extension is
 //      png/ico/jpg/webp/gif. Raster keeps its own colors, so it never blackens.
 //   2. SVG icons — used only when they aren't currentColor-monochrome.
 //   1. anything else icon-ish (type/extension unknown; content-type decides).
-// `rel="mask-icon"` is skipped outright (monochrome by design). Falls back to
-// /favicon.ico, then undefined → caller renders a framework-tinted globe.
-async function detectFaviconUrl(port: string): Promise<string | undefined> {
+// `rel="mask-icon"` is skipped outright (monochrome by design).
+//
+// Returns two icons: `best` for the dashboard (SVG allowed), and a `raster`
+// variant for the menu bar. When the page only declares an SVG, `raster` is
+// filled from the conventional paths (/favicon.ico, /apple-touch-icon.png) so
+// the menu bar can still show a real icon instead of falling back to a dot.
+async function detectFavicons(port: string): Promise<ResolvedFavicons> {
   const origin = `http://localhost:${port}`;
 
   const html = await fetchWithTimeout(`${origin}/`).then((r) =>
@@ -240,14 +252,31 @@ async function detectFaviconUrl(port: string): Promise<string | undefined> {
 
   // Array.sort is stable in V8, so document order is preserved within a rank.
   candidates.sort((a, b) => b.rank - a.rank);
+
+  let best: string | undefined;
+  let raster: string | undefined;
+  const consider = (dataUri: string | undefined) => {
+    if (!dataUri) return;
+    if (!best) best = dataUri;
+    if (!raster && !dataUri.startsWith("data:image/svg")) raster = dataUri;
+  };
+
   for (const c of candidates) {
-    const dataUri = await fetchFaviconDataUri(c.url, {
-      rejectMonochromeSvg: true,
-    });
-    if (dataUri) return dataUri;
+    if (best && raster) break;
+    consider(await fetchFaviconDataUri(c.url, { rejectMonochromeSvg: true }));
   }
 
-  return fetchFaviconDataUri(`${origin}/favicon.ico`);
+  // The page declared no usable raster (SVG-only, or no icons at all). Probe the
+  // conventional raster paths so the menu bar still gets a real icon; these also
+  // serve as the universal fallback when nothing was declared in the HTML.
+  if (!best || !raster) {
+    for (const path of ["/favicon.ico", "/apple-touch-icon.png"]) {
+      if (best && raster) break;
+      consider(await fetchFaviconDataUri(`${origin}${path}`));
+    }
+  }
+
+  return { best, raster };
 }
 
 // On-demand view of a project's startup log. When a dev server fails to
@@ -361,24 +390,26 @@ function ServerItem({
   // relaunches, so the icon doesn't flash back to a placeholder every
   // refresh interval. keepPreviousData keeps the prior URL visible while
   // a fresh fetch is in flight.
-  const { data: faviconUrl } = useCachedPromise(
-    detectFaviconUrl,
-    [server.port],
-    {
-      keepPreviousData: true,
-    },
-  );
-  // Persist resolved favicons onto the project's recents entry so the
-  // picker (in the Start command) can render the real icon even when the
-  // server is stopped. updateRecentFavicon is a no-op when nothing
-  // changed, so this is cheap to call on every render.
+  const { data: favicons } = useCachedPromise(detectFavicons, [server.port], {
+    keepPreviousData: true,
+  });
+  const faviconUrl = favicons?.best;
+  const faviconRaster = favicons?.raster;
+  // Persist resolved favicons onto the project's recents entry so the picker
+  // (Start command) and the menu bar can render the real icon even when the
+  // server is stopped. We cache both the best icon (SVG allowed, for the List)
+  // and the raster variant (for the menu bar, which can't render SVGs).
+  // updateRecentFavicon is a no-op when nothing changed, so this is cheap.
   useEffect(() => {
-    if (!faviconUrl) return;
-    updateRecentFavicon(server.cwd, faviconUrl).catch(() => {
+    if (!faviconUrl && !faviconRaster) return;
+    updateRecentFavicon(server.cwd, {
+      favicon: faviconUrl,
+      faviconRaster,
+    }).catch(() => {
       // Picker iconography is best-effort; failing to persist must not
       // disrupt the dashboard.
     });
-  }, [server.cwd, faviconUrl]);
+  }, [server.cwd, faviconUrl, faviconRaster]);
   const icon: Image.ImageLike = faviconUrl
     ? { source: faviconUrl, fallback: Icon.Globe }
     : { source: Icon.Globe, tintColor: toolColor(server.tool) };

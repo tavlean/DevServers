@@ -66,12 +66,22 @@ function tintedMenuIcon(
 
 // Raycast renders SVG images in the menu bar as a monochrome template — they
 // show up as a solid black blob — whereas raster images (PNG/ICO) keep their
-// color. A cached favicon is a data URI; if it's an SVG we can't use it here,
-// so callers treat it as "no favicon" and fall back to the tinted dot/folder.
+// color. A cached favicon is a data URI; if it's an SVG we can't use it here.
 // (The dashboard renders in a List, which shows SVGs in full color, so its
 // favicons are unaffected.)
 function isSvgDataUri(uri: string): boolean {
   return uri.startsWith("data:image/svg");
+}
+
+// The raster favicon to show for a project in the menu bar, or undefined when
+// there isn't a usable one. Prefers `faviconRaster` (the raster variant the
+// dashboard resolves specifically for the menu bar), then the shared `favicon`
+// when that's already a raster. An SVG-only project has neither and falls back
+// to the framework-tinted glyph.
+function menuBarFavicon(recent: RecentProject): string | undefined {
+  if (recent.faviconRaster) return recent.faviconRaster;
+  if (recent.favicon && !isSvgDataUri(recent.favicon)) return recent.favicon;
+  return undefined;
 }
 
 // Icon for a running server row. Reuses the favicon the dashboard already
@@ -165,14 +175,13 @@ export default function Command() {
 
   // Raster favicons the dashboard cached onto recents, keyed by canonical cwd,
   // so running rows can show the project's real icon without a network fetch.
-  // SVG favicons are skipped here — the menu bar renders them as a black blob
-  // (see isSvgDataUri), so those rows keep the framework-tinted dot instead.
+  // menuBarFavicon skips SVG-only projects (the menu bar renders SVGs as a
+  // black blob), so those rows keep the framework-tinted glyph instead.
   const faviconByCwd = useMemo(() => {
     const map = new Map<string, string>();
     for (const recent of recents) {
-      if (recent.favicon && !isSvgDataUri(recent.favicon)) {
-        map.set(canonicalCwd(recent.cwd), recent.favicon);
-      }
+      const favicon = menuBarFavicon(recent);
+      if (favicon) map.set(canonicalCwd(recent.cwd), favicon);
     }
     return map;
   }, [recents]);
@@ -332,14 +341,11 @@ export default function Command() {
               title={recent.projectName}
               subtitle={recent.branch}
               icon={
-                recent.favicon && !isSvgDataUri(recent.favicon)
-                  ? recent.favicon
-                  : tintedMenuIcon(
-                      "folder",
-                      recent.tool
-                        ? toolColor(recent.tool)
-                        : Color.SecondaryText,
-                    )
+                menuBarFavicon(recent) ??
+                tintedMenuIcon(
+                  "folder",
+                  recent.tool ? toolColor(recent.tool) : Color.SecondaryText,
+                )
               }
               onAction={() => {
                 void (async () => {
