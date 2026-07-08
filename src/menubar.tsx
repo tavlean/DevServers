@@ -28,10 +28,10 @@ function metadataSubtitle(count: number): string {
   return count === 1 ? "1 running" : `${count} running`;
 }
 
-// The URL locator shown after the project name: the custom domain host when
-// one points at this server (e.g. "ragi.loc"), otherwise just the port as
-// ":9292". "localhost" is dropped — the port alone disambiguates same-project
-// servers, which is what matters when several run at once.
+// The URL locator shown (in parentheses) after the project name: the custom
+// domain host when one points at this server (e.g. "ragi.loc"), otherwise just
+// the port ("9292"). "localhost" is dropped — the port alone disambiguates
+// same-project servers, which is what matters when several run at once.
 function serverLocator(server: DevServer): string {
   const custom =
     server.customUrls && server.customUrls.length > 0
@@ -44,16 +44,16 @@ function serverLocator(server: DevServer): string {
       return custom;
     }
   }
-  return `:${server.port}`;
+  return server.port;
 }
 
-// Row title for a running server: "<project> <locator> · <branch>". The
+// Row title for a running server: "<project> (<locator>) · <branch>". The
 // project name leads (the section header is dropped, so this is where it
-// shows), then the port/domain, then the branch. It's a submenu, which has no
-// subtitle, so everything sits on one line at one weight — the " · " separator
-// stands in for the dimming we can't apply.
+// shows), then the port/domain in parens, then the branch. It's a submenu,
+// which has no subtitle, so everything sits on one line at one weight — the
+// parens and " · " separator stand in for the dimming we can't apply.
 function serverTitle(server: DevServer): string {
-  const head = `${server.projectName} ${serverLocator(server)}`;
+  const head = `${server.projectName} (${serverLocator(server)})`;
   return server.branch ? `${head} · ${server.branch}` : head;
 }
 
