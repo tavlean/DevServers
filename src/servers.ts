@@ -994,9 +994,49 @@ export async function killServer(pid: number): Promise<void> {
   }
 }
 
-// Restart a dev server: force-kill the old listener, then spawn a
-// replacement via startDevServer.
+// Kill the ephemeral-port helpers a dead dev server left behind.
+//
+// Killing the dev server does not take them with it. Miniflare's workerd is
+// launched by an intermediate process that then exits, so workerd is adopted
+// by init: it is nobody's child by the time we signal anything, and it holds
+// its port until the machine restarts. Restarting a project therefore piled
+// up two more every time, and they were not merely idle. They are only hidden
+// from the list while a real server for that project is listening (see
+// suppressHelperRows), which is exactly what a restart briefly takes away, so
+// the whole accumulated pile surfaced in the gap between the old server dying
+// and the new one binding. Reaping is what stops the pile existing.
+//
+// Call only with the project down. If anything is still serving this cwd on a
+// deliberate port, we touch nothing: that server owns helpers we have no way
+// of telling apart from these.
+export async function reapProjectHelpers(cwd: string): Promise<void> {
+  try {
+    const listeners = await listListeners();
+    if (listeners.length === 0) return;
+    const cwdByPid = await listCwds([...new Set(listeners.map((l) => l.pid))]);
+    const mine = listeners.filter((l) => cwdByPid.get(l.pid) === cwd);
+    if (mine.some((l) => l.port < EPHEMERAL_PORT_MIN)) return;
+    for (const pid of new Set(mine.map((l) => l.pid))) {
+      try {
+        // SIGTERM, not SIGKILL: these are cleanup, not something whose port
+        // we are racing to reclaim, and workerd flushes on the way out.
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // Already gone, or not ours to signal. Either way, nothing to do.
+      }
+    }
+  } catch {
+    // Reaping is hygiene layered on top of the kill the user asked for.
+    // A failure here must never surface as a failed kill or restart.
+  }
+}
+
+// Restart a dev server: force-kill the old listener, reap what it left
+// behind, then spawn a replacement via startDevServer. Reaping sits between
+// the two because it needs the project to be down to be sure of what it is
+// looking at, and the respawn brings it straight back up.
 export async function restartServer(server: DevServer): Promise<void> {
   await killServer(server.pid);
+  await reapProjectHelpers(server.cwd);
   await startDevServer(server.cwd);
 }

@@ -35,6 +35,7 @@ import {
   killProcess,
   killServer,
   openInBackground,
+  reapProjectHelpers,
   restartServer,
   spawnLogPath,
   startDevServer,
@@ -1533,12 +1534,18 @@ export default function Command(
   }, [servers]);
 
   async function kill(pid: number) {
+    // Captured before the kill: afterwards this pid is gone from `servers`.
+    const cwd = servers.find((s) => s.pid === pid)?.cwd;
     try {
       await mutate(killProcess(pid), {
         optimisticUpdate: (current) =>
           (current ?? []).filter((s) => s.pid !== pid),
         rollbackOnError: true,
       });
+      // Take the project's leftover helpers with it. reapProjectHelpers backs
+      // out on its own if another server is still serving this cwd, so a
+      // project running two dev servers keeps the survivor's plumbing.
+      if (cwd) await reapProjectHelpers(cwd);
       pokeMenuBar();
     } catch (err) {
       await showFailureToast(err, { title: "Failed to kill server" });
@@ -1563,6 +1570,9 @@ export default function Command(
       await mutate(
         (async () => {
           await Promise.all(targets.map((s) => killProcess(s.pid)));
+          await Promise.all(
+            [...new Set(targets.map((s) => s.cwd))].map(reapProjectHelpers),
+          );
         })(),
         {
           optimisticUpdate: (current) =>
@@ -1594,6 +1604,9 @@ export default function Command(
       await mutate(
         (async () => {
           await Promise.all(servers.map((s) => killProcess(s.pid)));
+          await Promise.all(
+            [...new Set(servers.map((s) => s.cwd))].map(reapProjectHelpers),
+          );
         })(),
         {
           optimisticUpdate: () => [],
