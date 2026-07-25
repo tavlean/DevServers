@@ -820,18 +820,22 @@ function pendingRowId(cwd: string): string {
   return `${PENDING_ID_PREFIX}${cwd}`;
 }
 
-// Spinner geometry. Twelve frames stepping every 50ms puts one revolution at
-// 600ms, a 30 degree step, which sits close to the animated toast's spinner so
-// the two read as the same idea.
+// Spinner timing. Smoothness is the size of each step, not the frame rate, so
+// the two knobs pull apart: 18 frames over a revolution is a 20 degree step
+// against the 30 degrees a 12-frame turn moved, and holding the frame rate
+// steady spends that on a slower turn (810ms) rather than a choppier one.
+// Slower also lands nearer the animated toast's spinner, which the 600ms
+// version overshot.
 //
-// 20 frames a second is the ceiling worth paying for. It costs one prop change
+// The frame rate itself is near its ceiling. Each frame costs one prop change
 // on one row, the frames are precomputed (see SPINNER_ICONS), and the interval
 // only runs while something is actually starting, so it is bounded by the 15s
-// watchdog. Going faster would buy little: past this the eye reads it as
-// continuous either way, while every extra frame is another render round trip
-// to Raycast.
-const SPINNER_FRAMES = 12;
-const SPINNER_FRAME_MS = 50;
+// watchdog. But every frame is still a render round trip to Raycast, and the
+// toast's own spinner is native and far smoother than anything reachable from
+// here. Buy smoothness with degrees per step first; raise the rate only after
+// that runs out.
+const SPINNER_FRAMES = 18;
+const SPINNER_FRAME_MS = 45;
 // Neutral gray, readable on both the light and the dark theme. Hardcoded
 // rather than tinted or drawn in currentColor: Raycast gives a data-URI SVG
 // no surrounding color context, so a currentColor-only icon renders as a
@@ -845,8 +849,8 @@ const SPINNER_GAP = 2 * Math.PI * SPINNER_RADIUS - SPINNER_ARC;
 
 // One frame of a buffering spinner, as an SVG data URI. Raycast has no
 // animated icons and no per-row loading state, so the animation is frames we
-// swap ourselves: a faint full-circle track with a quarter-circle arc rotated
-// 30 degrees per frame over it, which is the same shape a CSS spinner draws
+// swap ourselves: a faint full-circle track with a quarter-circle arc stepped
+// around it one frame at a time, which is the same shape a CSS spinner draws
 // with stroke-dasharray.
 function spinnerFrame(frame: number): string {
   const angle = frame * (360 / SPINNER_FRAMES);
