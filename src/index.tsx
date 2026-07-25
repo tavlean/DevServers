@@ -296,19 +296,41 @@ async function detectFavicons(port: string): Promise<ResolvedFavicons> {
 // setup (portless needing sudo, a missing binary, a crashing build) is
 // diagnosable from inside Raycast instead of failing opaquely.
 //
-// Reached on demand only: from a per-row action, and from the "View
-// Startup Log" action on the failure toast when a spawn isn't detected.
-function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
+// Reached on demand only: from a per-row action, and from a failed start row.
+//
+// `logStart` is the byte offset that attempt began writing at. The log is
+// opened append-only and never rotated, so it holds every run for that cwd
+// until the OS clears tmpdir: by the fourth restart of a crashing project the
+// file is four near-identical failures deep, oldest first, and the run you
+// opened the view to read is the one scrolled off the bottom. Given the offset
+// we show that run alone, which is the same slice diagnoseSpawnFailure reads.
+// Without one (a server row, where no single attempt is in question) we show
+// the file. Either way the whole file stays one action away.
+function SpawnLogView({
+  cwd,
+  name,
+  logStart,
+}: {
+  cwd: string;
+  name: string;
+  logStart?: number;
+}) {
   const logPath = spawnLogPath(cwd);
+  const [showAll, setShowAll] = useState(logStart === undefined);
   const { data, isLoading, revalidate } = useCachedPromise(
-    async (p: string): Promise<string> => {
+    async (p: string, from: number): Promise<string> => {
       try {
-        return await fs.promises.readFile(p, "utf8");
+        const buf = await fs.promises.readFile(p);
+        // A shorter file than the offset means the log was cleared out from
+        // under us; showing everything beats showing nothing.
+        return from > 0 && from < buf.length
+          ? buf.subarray(from).toString("utf8")
+          : buf.toString("utf8");
       } catch {
         return "";
       }
     },
-    [logPath],
+    [logPath, showAll ? 0 : (logStart ?? 0)],
   );
 
   // Follow the file while the view is open so a server that's still booting
@@ -321,6 +343,7 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
 
   const log = (data ?? "").trim();
   const exists = fs.existsSync(logPath);
+  const scopable = logStart !== undefined && logStart > 0;
   // The body is the log and nothing else. The heading used to repeat the
   // navigation title word for word, and the footer spelled out a tmpdir path
   // long enough to wrap mid-token; between them they took the top and bottom
@@ -329,20 +352,34 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
   const markdown = log
     ? "```\n" + log + "\n```"
     : exists
-      ? "_The log file exists but is empty. The process wrote no output before exiting._"
+      ? scopable && !showAll
+        ? "_This attempt wrote nothing before exiting. Earlier runs are in the full log._"
+        : "_The log file exists but is empty. The process wrote no output before exiting._"
       : "_No startup log found. This server may have been started outside Dev Servers, so we never captured its output._";
 
   return (
     <Detail
       isLoading={isLoading}
       markdown={markdown}
-      navigationTitle={`Startup log: ${name}`}
+      navigationTitle={
+        scopable && !showAll
+          ? `Startup log: ${name} (this attempt)`
+          : `Startup log: ${name}`
+      }
       actions={
         <ActionPanel>
           {/* Refresh was the ↵ action, which this view had already made
               pointless by tailing the file every 2s. Copying the log is what
               you actually want next: into a search, an issue, or a chat. */}
           {log && <Action.CopyToClipboard title="Copy Log" content={log} />}
+          {scopable && (
+            <Action
+              title={showAll ? "Show This Attempt Only" : "Show Full Log"}
+              icon={showAll ? Icon.Filter : Icon.List}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "l" }}
+              onAction={() => setShowAll((v) => !v)}
+            />
+          )}
           {exists && (
             <Action.Open
               title="Open Log File"
@@ -901,13 +938,18 @@ function PendingItem({
   cwd,
   entry,
   terminalApp,
+  editorApp,
   onDismiss,
+  onRefresh,
 }: {
   id: string;
   cwd: string;
   entry: PendingStart;
   terminalApp: Application;
+  // Unset when the user hasn't picked an editor; the action is hidden then.
+  editorApp?: Application;
   onDismiss: () => void;
+  onRefresh: () => void;
 }) {
   const { push } = useNavigation();
   const [frame, setFrame] = useState(0);
@@ -947,32 +989,75 @@ function PendingItem({
       ]}
       actions={
         <ActionPanel>
-          <Action
-            title="View Startup Log"
-            icon={Icon.Terminal}
-            shortcut={{ modifiers: ["cmd"], key: "l" }}
-            onAction={() => push(<SpawnLogView cwd={cwd} name={entry.name} />)}
-          />
-          {failure?.fix && (
-            <Action.CopyToClipboard
-              title="Copy Fix Command"
-              icon={Icon.Clipboard}
-              content={failure.fix}
+          {/* What went wrong. */}
+          <ActionPanel.Section>
+            <Action
+              title="View Startup Log"
+              icon={Icon.Terminal}
+              shortcut={{ modifiers: ["cmd"], key: "l" }}
+              onAction={() =>
+                push(
+                  <SpawnLogView
+                    cwd={cwd}
+                    name={entry.name}
+                    logStart={entry.logStart}
+                  />,
+                )
+              }
             />
-          )}
-          <Action.Open
-            title={`Open in ${terminalApp.name}`}
-            icon={Icon.Terminal}
-            target={cwd}
-            application={terminalApp}
-            shortcut={{ modifiers: ["cmd"], key: "t" }}
-          />
-          <Action
-            title="Dismiss"
-            icon={Icon.XMarkCircle}
-            shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
-            onAction={onDismiss}
-          />
+            {failure?.fix && (
+              <Action.CopyToClipboard
+                title="Copy Fix Command"
+                icon={Icon.Clipboard}
+                content={failure.fix}
+              />
+            )}
+          </ActionPanel.Section>
+          {/* The project itself, on the same chords server rows use. A failed
+              row is still a row about a folder, and losing ⌘N here meant
+              leaving the dashboard to start anything at all. */}
+          <ActionPanel.Section>
+            <Action.Open
+              title={`Open in ${terminalApp.name}`}
+              icon={Icon.Terminal}
+              target={cwd}
+              application={terminalApp}
+              shortcut={{ modifiers: ["cmd"], key: "t" }}
+            />
+            {editorApp && (
+              <Action.Open
+                title={`Open in ${editorApp.name}`}
+                icon={Icon.Code}
+                target={cwd}
+                application={editorApp}
+                shortcut={{ modifiers: ["cmd"], key: "e" }}
+              />
+            )}
+            <Action.ShowInFinder
+              path={cwd}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+            />
+            <Action
+              title="Start Dev Server"
+              icon={Icon.Play}
+              shortcut={{ modifiers: ["cmd"], key: "n" }}
+              onAction={openStartCommand}
+            />
+            <Action
+              title="Refresh"
+              icon={Icon.ArrowClockwise}
+              shortcut={{ modifiers: ["cmd"], key: "r" }}
+              onAction={onRefresh}
+            />
+          </ActionPanel.Section>
+          <ActionPanel.Section>
+            <Action
+              title="Dismiss"
+              icon={Icon.XMarkCircle}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
+              onAction={onDismiss}
+            />
+          </ActionPanel.Section>
         </ActionPanel>
       }
     />
@@ -1732,7 +1817,9 @@ export default function Command(
               cwd={cwd}
               entry={entry}
               terminalApp={terminalApp}
+              editorApp={editorApp}
               onDismiss={() => dismissPending(cwd)}
+              onRefresh={refresh}
             />
           ))}
         </List.Section>
