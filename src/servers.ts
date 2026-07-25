@@ -589,21 +589,40 @@ export async function fetchServers(): Promise<DevServer[]> {
 // macOS hands out dynamic ports from this range when a process binds port 0.
 const EPHEMERAL_PORT_MIN = 49152;
 
-// Drop rows that are internal sockets of an already-listed server: the
-// process is a descendant of another row's process AND its chosen port is
-// OS-assigned. That combination is precisely "helper the dev server forked
-// with port 0" — e.g. the workerd instances the Cloudflare Vite plugin runs
-// under `vite dev`, which would otherwise appear as extra servers of the
-// same project on meaningless ports. A child bound to a *configured* port
-// stays visible (workerd on 8787 under `wrangler dev`, a Hydrogen storefront
-// under `shopify app dev`): a deliberate port is a server someone opens.
+// Drop rows that are internal sockets of an already-listed server, on either
+// of two signals. Both require an OS-assigned port, which is the half that
+// never lies: nobody picks 51759 on purpose, so a process listening there is
+// plumbing. A child bound to a *configured* port stays visible (workerd on
+// 8787 under `wrangler dev`, a Hydrogen storefront under `shopify app dev`),
+// because a deliberate port is a server someone opens.
+//
+//   1. Descent. The process is a descendant of another row's process: the
+//      plain "helper the dev server forked with port 0" case.
+//   2. Same project. Some other row on a deliberate port has this cwd.
+//
+// The second exists because the first loses to reparenting. Miniflare's
+// workerd is launched by an intermediate process that then exits, so workerd
+// is adopted by init and the ancestor walk finds nothing but pid 1. Two of
+// them per `vite dev` then showed up as extra servers of the project, and
+// they were not merely noisy: Restart on one killed workerd and started a
+// second dev server for the same folder, leaving the first running. Repeat
+// and the project accumulates servers, each on the next port up.
 function suppressHelperRows(
   servers: DevServer[],
   procByPid: Map<number, RawProcess>,
 ): DevServer[] {
   const shownPids = new Set(servers.map((s) => s.pid));
+  // Projects that already have a server on a port someone chose. An
+  // ephemeral-port process sharing one of these cwds is that server's
+  // plumbing, whatever became of its parent.
+  const anchoredCwds = new Set(
+    servers
+      .filter((s) => parseInt(s.port, 10) < EPHEMERAL_PORT_MIN)
+      .map((s) => s.cwd),
+  );
   return servers.filter((server) => {
     if (parseInt(server.port, 10) < EPHEMERAL_PORT_MIN) return true;
+    if (anchoredCwds.has(server.cwd)) return false;
     let cur = procByPid.get(server.pid);
     for (let depth = 0; depth < ANCESTOR_SCAN_DEPTH && cur; depth++) {
       cur = procByPid.get(cur.ppid);
