@@ -939,7 +939,9 @@ function PendingItem({
   entry,
   terminalApp,
   editorApp,
+  failedCount,
   onDismiss,
+  onDismissAll,
   onRefresh,
 }: {
   id: string;
@@ -948,7 +950,11 @@ function PendingItem({
   terminalApp: Application;
   // Unset when the user hasn't picked an editor; the action is hidden then.
   editorApp?: Application;
+  // How many pending rows are currently failed, across the whole list. Drives
+  // whether Dismiss All is worth offering.
+  failedCount: number;
   onDismiss: () => void;
+  onDismissAll: () => void;
   onRefresh: () => void;
 }) {
   const { push } = useNavigation();
@@ -963,6 +969,47 @@ function PendingItem({
     return () => clearInterval(id);
   }, [spinning]);
 
+  // The project actions, identical on both states and on the same chords
+  // server rows use. A pending row is still a row about a folder: leaving it
+  // actionless meant ⌘N, the way you start anything from this dashboard,
+  // silently did nothing on the row you were most likely looking at.
+  const projectActions = (
+    <ActionPanel.Section>
+      <Action.Open
+        title={`Open in ${terminalApp.name}`}
+        icon={Icon.Terminal}
+        target={cwd}
+        application={terminalApp}
+        shortcut={{ modifiers: ["cmd"], key: "t" }}
+      />
+      {editorApp && (
+        <Action.Open
+          title={`Open in ${editorApp.name}`}
+          icon={Icon.Code}
+          target={cwd}
+          application={editorApp}
+          shortcut={{ modifiers: ["cmd"], key: "e" }}
+        />
+      )}
+      <Action.ShowInFinder
+        path={cwd}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
+      />
+      <Action
+        title="Start Dev Server"
+        icon={Icon.Play}
+        shortcut={{ modifiers: ["cmd"], key: "n" }}
+        onAction={openStartCommand}
+      />
+      <Action
+        title="Refresh"
+        icon={Icon.ArrowClockwise}
+        shortcut={{ modifiers: ["cmd"], key: "r" }}
+        onAction={onRefresh}
+      />
+    </ActionPanel.Section>
+  );
+
   if (entry.status === "starting") {
     return (
       <List.Item
@@ -970,6 +1017,27 @@ function PendingItem({
         icon={SPINNER_ICONS[frame]}
         title={entry.name}
         accessories={[{ tag: { value: "Starting…", color: Color.Yellow } }]}
+        actions={
+          <ActionPanel>
+            {/* Tailing the log of a server that is still booting is the one
+                thing you can usefully do while waiting on it. */}
+            <Action
+              title="View Startup Log"
+              icon={Icon.Terminal}
+              shortcut={{ modifiers: ["cmd"], key: "l" }}
+              onAction={() =>
+                push(
+                  <SpawnLogView
+                    cwd={cwd}
+                    name={entry.name}
+                    logStart={entry.logStart}
+                  />,
+                )
+              }
+            />
+            {projectActions}
+          </ActionPanel>
+        }
       />
     );
   }
@@ -1013,43 +1081,7 @@ function PendingItem({
               />
             )}
           </ActionPanel.Section>
-          {/* The project itself, on the same chords server rows use. A failed
-              row is still a row about a folder, and losing ⌘N here meant
-              leaving the dashboard to start anything at all. */}
-          <ActionPanel.Section>
-            <Action.Open
-              title={`Open in ${terminalApp.name}`}
-              icon={Icon.Terminal}
-              target={cwd}
-              application={terminalApp}
-              shortcut={{ modifiers: ["cmd"], key: "t" }}
-            />
-            {editorApp && (
-              <Action.Open
-                title={`Open in ${editorApp.name}`}
-                icon={Icon.Code}
-                target={cwd}
-                application={editorApp}
-                shortcut={{ modifiers: ["cmd"], key: "e" }}
-              />
-            )}
-            <Action.ShowInFinder
-              path={cwd}
-              shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
-            />
-            <Action
-              title="Start Dev Server"
-              icon={Icon.Play}
-              shortcut={{ modifiers: ["cmd"], key: "n" }}
-              onAction={openStartCommand}
-            />
-            <Action
-              title="Refresh"
-              icon={Icon.ArrowClockwise}
-              shortcut={{ modifiers: ["cmd"], key: "r" }}
-              onAction={onRefresh}
-            />
-          </ActionPanel.Section>
+          {projectActions}
           <ActionPanel.Section>
             <Action
               title="Dismiss"
@@ -1057,6 +1089,16 @@ function PendingItem({
               shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
               onAction={onDismiss}
             />
+            {/* Only worth offering once there is more than one to clear;
+                below that it is Dismiss under a longer name. */}
+            {failedCount > 1 && (
+              <Action
+                title={`Dismiss All ${failedCount} Failed`}
+                icon={Icon.XMarkCircleFilled}
+                shortcut={{ modifiers: ["cmd", "opt"], key: "d" }}
+                onAction={onDismissAll}
+              />
+            )}
           </ActionPanel.Section>
         </ActionPanel>
       }
@@ -1173,6 +1215,18 @@ export default function Command(
       const next = new Map(prev);
       next.delete(cwd);
       return next;
+    });
+  }
+
+  // Clears failed entries only. A start still in flight is not the user's to
+  // dismiss: its row is about to resolve one way or the other by itself.
+  function dismissAllFailed() {
+    setPendingStarts((prev) => {
+      const next = new Map(prev);
+      for (const [cwd, entry] of prev) {
+        if (entry.status === "failed") next.delete(cwd);
+      }
+      return next.size === prev.size ? prev : next;
     });
   }
 
@@ -1727,6 +1781,9 @@ export default function Command(
   const visiblePending = [...pendingStarts].filter(
     ([cwd]) => !servers.some((s) => s.cwd === cwd),
   );
+  const visibleFailedCount = visiblePending.filter(
+    ([, entry]) => entry.status === "failed",
+  ).length;
 
   // Hand the cursor across the same handoff the rows make, in render, for the
   // same reason the rows are derived: an effect runs *after* the commit that
@@ -1786,9 +1843,14 @@ export default function Command(
             description={`Refreshing every ${prefs.refreshInterval}s.`}
             actions={
               <ActionPanel>
+                {/* ↵ runs it as the primary action, but ⌘N has to work here
+                    too: it is the chord for starting a server from every row
+                    in this list, and the empty state is exactly where someone
+                    reaches for it. */}
                 <Action
                   title="Start Dev Server"
                   icon={Icon.Play}
+                  shortcut={{ modifiers: ["cmd"], key: "n" }}
                   onAction={openStartCommand}
                 />
                 <Action
@@ -1818,7 +1880,9 @@ export default function Command(
               entry={entry}
               terminalApp={terminalApp}
               editorApp={editorApp}
+              failedCount={visibleFailedCount}
               onDismiss={() => dismissPending(cwd)}
+              onDismissAll={dismissAllFailed}
               onRefresh={refresh}
             />
           ))}
