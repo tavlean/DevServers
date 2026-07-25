@@ -1,5 +1,11 @@
 # Dev Servers Changelog
 
+## [Starting servers now appear in the dashboard right away] - {PR_MERGE_DATE}
+
+- **Every server you start gets a row the moment you confirm it.** A new **Starting** section at the top of the dashboard lists each one by project name, with a ring that fills over the 15 seconds it has to bind its port. Starting several at once shows several rows, so you can watch them come up one by one instead of guessing behind a single toast. Each row hands off to the real server row as soon as the port binds.
+- **A server that never starts leaves a row behind saying so.** The row turns red and names the cause where it can ("Portless proxy isn't running", "Port already in use"), and it stays until you dismiss it. The actions live on the row: **View Startup Log**, **Copy Fix Command** when there is one, **Open in Terminal**, and **Dismiss**. Previously this was a toast, which took its buttons with it when it faded and showed no buttons at all when the Raycast window was closed, which is where most starts are 15 seconds in. Start several and each failure now explains itself separately rather than sharing one line.
+- The success toast is unchanged, and restarting a server behaves exactly as before.
+
 ## [Clearer startup failures, on start and on restart] - {PR_MERGE_DATE}
 
 - **A dev server that fails to start because the portless proxy is down now says so.** Dev scripts wrapped in `portless run` need the proxy already running: a background spawn has no TTY for portless's sudo prompt, so portless exits before the framework ever boots. The toast used to report only the generic "not detected after 15s", which reads as an extension bug rather than a machine-setup problem. It now says **Portless proxy isn't running** and offers a **Copy Fix Command** action for `portless service install`, which starts the proxy at boot so starts keep working after a reboot.
