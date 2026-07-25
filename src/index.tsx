@@ -820,11 +820,11 @@ function pendingRowId(cwd: string): string {
   return `${PENDING_ID_PREFIX}${cwd}`;
 }
 
-// Spinner geometry. Twelve frames stepping every 100ms puts one revolution at
-// 1.2s, a 30 degree step. Fine enough to read as rotation rather than
-// ticking, without asking the row to re-render more than ten times a second.
+// Spinner geometry. Twelve frames stepping every 70ms puts one revolution at
+// 840ms, a 30 degree step. Fine enough to read as rotation rather than
+// ticking, and the churn stays inside one row (see PendingItem).
 const SPINNER_FRAMES = 12;
-const SPINNER_FRAME_MS = 100;
+const SPINNER_FRAME_MS = 70;
 // Neutral gray, readable on both the light and the dark theme. Hardcoded
 // rather than tinted or drawn in currentColor: Raycast gives a data-URI SVG
 // no surrounding color context, so a currentColor-only icon renders as a
@@ -1255,11 +1255,10 @@ export default function Command(
 
     // All expected servers detected. Move the cursor onto the newly started
     // server so the default ↵ action operates on it instead of whatever row
-    // happened to be selected (the list is ordered by PID, not start time, so
-    // a new server usually lands at the bottom — see the grouping below). When
-    // several were started at once, focus the first; the user can step through
-    // the rest. Resolving by cwd picks whichever server is now listening for
-    // that cwd, which is the freshly spawned one even after a kill+respawn.
+    // happened to be selected. When several were started at once, focus the
+    // first; the user can step through the rest. Resolving by cwd picks
+    // whichever server is now listening for that cwd, which is the freshly
+    // spawned one even after a kill+respawn.
     //
     // Skipped while the cursor sits on a pending row: the render-time handoff
     // has already carried it to that row's server, and that is the one the
@@ -1566,9 +1565,27 @@ export default function Command(
       ? servers
       : servers.filter((s) => s.tool === toolFilter);
 
+  // Newest first, both within a section and across sections. `ps` hands us
+  // PID order, which only loosely tracks start time and wraps around, so a
+  // server started an hour ago can outrank one started seconds ago.
+  //
+  // Recency is what makes the Starting section read as one continuous place:
+  // a pending row at the top hands off to a server row immediately below it,
+  // instead of the new server being flung to wherever its PID happens to sort.
+  //
+  // PID breaks ties on purpose. `ps lstart` resolves only to the second, so a
+  // multi-target start produces identical timestamps, and a comparator that
+  // returned 0 there would leave those rows free to swap places on every poll.
+  // An unparseable lstart yields NaN, which is falsy, so it also falls through
+  // to PID rather than ordering at random.
+  const byRecency = (a: DevServer, b: DevServer) =>
+    b.startedAt.getTime() - a.startedAt.getTime() || b.pid - a.pid;
+
   // Group by projectKey (git common-dir for git projects, cwd otherwise) so
   // sibling worktrees of the same repo collapse into one section. Each row
-  // still carries its own cwd/branch so per-row actions stay correct.
+  // still carries its own cwd/branch so per-row actions stay correct. A
+  // section sorts by its newest server, so starting one server promotes its
+  // whole project.
   const grouped = Object.entries(
     visible.reduce(
       (acc, s) => {
@@ -1577,7 +1594,12 @@ export default function Command(
       },
       {} as Record<string, DevServer[]>,
     ),
-  );
+  )
+    .map(
+      ([key, list]) =>
+        [key, [...list].sort(byRecency)] as [string, DevServer[]],
+    )
+    .sort(([, a], [, b]) => byRecency(a[0], b[0]));
 
   // Which pending starts still deserve a row. Derived every render, never
   // stored: an entry shows only while its cwd is absent from `servers`.
