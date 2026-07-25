@@ -1,5 +1,9 @@
 # Dev Servers Changelog
 
+## [Clearer startup failures for portless projects] - {PR_MERGE_DATE}
+
+- **A dev server that fails to start because the portless proxy is down now says so.** Dev scripts wrapped in `portless run` need the proxy already running: a background spawn has no TTY for portless's sudo prompt, so portless exits before the framework ever boots. The startup toast used to report only the generic "not detected after 15s", which reads as an extension bug rather than a machine-setup problem. It now names the cause and points at the fix, `portless service install`, which starts the proxy at boot so starts keep working after a reboot.
+
 ## [Menu bar polish and sharper tool detection] - 2026-07-09
 
 ### Menu bar
