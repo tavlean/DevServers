@@ -19,11 +19,7 @@ import {
   showToast,
   useNavigation,
 } from "@raycast/api";
-import {
-  getProgressIcon,
-  showFailureToast,
-  useCachedPromise,
-} from "@raycast/utils";
+import { showFailureToast, useCachedPromise } from "@raycast/utils";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -810,42 +806,76 @@ type PendingStart = {
   // Spawn-log byte offset at spawn time, copied from the phase's `expecting`
   // map so a failed row can diagnose itself from this attempt's bytes alone.
   logStart: number;
-  // Drives the progress ring toward SPAWN_TIMEOUT_MS.
-  startedAt: number;
   status: "starting" | "failed";
   // Set when failed and diagnosable, else null.
   reason: SpawnFailure | null;
 };
 
-// The synthetic row for a pending start. While starting it counts a progress
-// ring toward the watchdog; once the watchdog gives up it turns red and
-// carries the remedies. A row can do that and a toast cannot: a toast's
-// actions die with it, and it degrades to an actionless HUD as soon as the
-// Raycast window closes, which is exactly when a 15-second failure lands.
+// Spinner geometry. Eight spokes stepping every 100ms puts one revolution at
+// 800ms, which reads as smooth without asking for many more frames than that.
+const SPINNER_SPOKES = 8;
+const SPINNER_FRAME_MS = 100;
+// Warm yellow, matching the Starting… tag. Hardcoded rather than tinted or
+// drawn in currentColor: Raycast gives a data-URI SVG no surrounding color
+// context, so a currentColor-only icon renders as a black square (the same
+// trap isMonochromeSvg exists to dodge for favicons).
+const SPINNER_COLOR = "#FFB800";
+
+// One frame of a buffering spinner, as an SVG data URI. Raycast has no
+// animated icons and no per-row loading state, so the animation is frames we
+// swap ourselves. Spokes fade with distance behind the head, which is what
+// makes a stepped sequence read as continuous rotation.
+function spinnerIcon(frame: number): string {
+  const spokes = Array.from({ length: SPINNER_SPOKES }, (_, i) => {
+    const behind = (i - frame + SPINNER_SPOKES) % SPINNER_SPOKES;
+    const opacity = (1 - behind / SPINNER_SPOKES).toFixed(2);
+    const angle = i * (360 / SPINNER_SPOKES);
+    return `<line x1="8" y1="1.9" x2="8" y2="5" transform="rotate(${angle} 8 8)" opacity="${opacity}"/>`;
+  }).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g stroke="${SPINNER_COLOR}" stroke-width="1.7" stroke-linecap="round">${spokes}</g></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+// The synthetic row for a pending start. While starting it spins; once the
+// watchdog gives up it turns red and carries the remedies. A row can do that
+// and a toast cannot: a toast's actions die with it, and it degrades to an
+// actionless HUD as soon as the Raycast window closes, which is exactly when
+// a 15-second failure lands.
+//
+// The spinner's frame counter lives here rather than in the dashboard so that
+// ten re-renders a second stay inside this one row. Hoisting it would re-run
+// the whole list, which is the churn sameServers and the polling cadence were
+// both written to avoid.
 function PendingItem({
   id,
   cwd,
   entry,
-  now,
   terminalApp,
   onDismiss,
 }: {
   id: string;
   cwd: string;
   entry: PendingStart;
-  now: number;
   terminalApp: Application;
   onDismiss: () => void;
 }) {
   const { push } = useNavigation();
+  const [frame, setFrame] = useState(0);
+  const spinning = entry.status === "starting";
+  useEffect(() => {
+    if (!spinning) return;
+    const id = setInterval(
+      () => setFrame((f) => (f + 1) % SPINNER_SPOKES),
+      SPINNER_FRAME_MS,
+    );
+    return () => clearInterval(id);
+  }, [spinning]);
 
   if (entry.status === "starting") {
     return (
       <List.Item
         id={id}
-        icon={getProgressIcon(
-          Math.min((now - entry.startedAt) / SPAWN_TIMEOUT_MS, 1),
-        )}
+        icon={spinnerIcon(frame)}
         title={entry.name}
         accessories={[{ tag: { value: "Starting…", color: Color.Yellow } }]}
       />
@@ -980,19 +1010,6 @@ export default function Command(
   const [pendingStarts, setPendingStarts] = useState<Map<string, PendingStart>>(
     new Map(),
   );
-
-  // A clock for the progress rings. Nothing else re-renders on a fixed
-  // cadence: fetchStableServers hands back the previous array reference when
-  // no server changed, so the poll alone would leave the rings frozen.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const starting = [...pendingStarts.values()].some(
-      (p) => p.status === "starting",
-    );
-    if (!starting) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [pendingStarts]);
 
   // Forget entries whose cwd now has a real server row. This is bookkeeping
   // only: visible rows are derived from the same `servers` array (see
@@ -1167,14 +1184,12 @@ export default function Command(
       // failure if the watchdog fires. Writing by cwd also means starting a
       // project that currently shows a failed row resets that row instead of
       // stacking a second one.
-      const startedAt = Date.now();
       setPendingStarts((prev) => {
         const next = new Map(prev);
         for (const t of succeeded) {
           next.set(t.cwd, {
             name: t.name,
             logStart: t.logStart,
-            startedAt,
             status: "starting",
             reason: null,
           });
@@ -1610,7 +1625,6 @@ export default function Command(
               id={`starting:${cwd}`}
               cwd={cwd}
               entry={entry}
-              now={now}
               terminalApp={terminalApp}
               onDismiss={() => dismissPending(cwd)}
             />
