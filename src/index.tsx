@@ -845,6 +845,11 @@ function diagnoseSpawnFailure(
 type PendingStart = {
   // Project display name, from the spawn target.
   name: string;
+  // Which section the row belongs to. Taken from a running server for this
+  // cwd when there is one, so a restart lands among its siblings; otherwise
+  // the cwd stands in, which is what projectKey falls back to for a
+  // non-git project anyway.
+  projectKey: string;
   // Spawn-log byte offset at spawn time, copied from the phase's `expecting`
   // map so a failed row can diagnose itself from this attempt's bytes alone.
   logStart: number;
@@ -1037,15 +1042,10 @@ function PendingItem({
       <List.Item
         id={id}
         icon={SPINNER_ICONS[frame]}
-        title={entry.name}
-        accessories={[
-          {
-            tag: {
-              value: entry.kind === "restart" ? "Restarting…" : "Starting…",
-              color: Color.Yellow,
-            },
-          },
-        ]}
+        // The section header is already the project name, so the row says
+        // what is happening instead of repeating it. Server rows title on
+        // their host and port; a row with no port yet has its state to give.
+        title={entry.kind === "restart" ? "Restarting…" : "Starting…"}
         actions={
           <ActionPanel>
             {/* Tailing the log of a server that is still booting is the one
@@ -1076,20 +1076,16 @@ function PendingItem({
     <List.Item
       id={id}
       icon={{ source: Icon.XMarkCircle, tintColor: Color.Red }}
-      title={entry.name}
-      subtitle={failure?.title}
-      accessories={[
-        {
-          tag: { value: "Failed", color: Color.Red },
-          // The two paths give the server different amounts of rope: the
-          // spawn watchdog waits 15s, restart's own poll about 10s.
-          tooltip: failure
-            ? failure.title
-            : entry.kind === "restart"
-              ? "Not detected after 10s"
-              : "Not detected after 15s",
-        },
-      ]}
+      // The cause is the title, for the same reason it is the title on a
+      // toast: it is the one part that always survives. The section above
+      // already says which project this is.
+      title={
+        failure?.title ??
+        (entry.kind === "restart"
+          ? "Didn't come back after 10s"
+          : "Didn't start after 15s")
+      }
+      accessories={[{ tag: { value: "Failed", color: Color.Red } }]}
       actions={
         <ActionPanel>
           {/* What went wrong. */}
@@ -1422,6 +1418,9 @@ export default function Command(
         for (const t of succeeded) {
           next.set(t.cwd, {
             name: t.name,
+            projectKey:
+              serversRef.current.find((s) => s.cwd === t.cwd)?.projectKey ??
+              t.cwd,
             logStart: t.logStart,
             status: "starting",
             reason: null,
@@ -1686,6 +1685,7 @@ export default function Command(
     setPendingStarts((prev) =>
       new Map(prev).set(server.cwd, {
         name: server.projectName,
+        projectKey: server.projectKey,
         logStart,
         status: "starting",
         reason: null,
@@ -1828,28 +1828,8 @@ export default function Command(
   const byRecency = (a: DevServer, b: DevServer) =>
     b.startedAt.getTime() - a.startedAt.getTime() || b.pid - a.pid;
 
-  // Group by projectKey (git common-dir for git projects, cwd otherwise) so
-  // sibling worktrees of the same repo collapse into one section. Each row
-  // still carries its own cwd/branch so per-row actions stay correct. A
-  // section sorts by its newest server, so starting one server promotes its
-  // whole project.
-  const grouped = Object.entries(
-    visible.reduce(
-      (acc, s) => {
-        (acc[s.projectKey] ??= []).push(s);
-        return acc;
-      },
-      {} as Record<string, DevServer[]>,
-    ),
-  )
-    .map(
-      ([key, list]) =>
-        [key, [...list].sort(byRecency)] as [string, DevServer[]],
-    )
-    .sort(([, a], [, b]) => byRecency(a[0], b[0]));
-
   // Which pending starts still deserve a row. Derived every render, never
-  // stored: an entry shows only while its cwd is absent from `servers`.
+  // stored: an entry shows only while `resolvingServer` finds nothing for it.
   // Reading the same array the server rows are built from is what makes the
   // handoff atomic, since the synthetic row can only vanish in the very
   // render that lists the real one. If this were a stored flag there would be
@@ -1857,6 +1837,60 @@ export default function Command(
   const visiblePending = [...pendingStarts].filter(
     ([cwd, entry]) => !resolvingServer(cwd, entry, servers),
   );
+
+  // Group by projectKey (git common-dir for git projects, cwd otherwise) so
+  // sibling worktrees of the same repo collapse into one section. Each row
+  // still carries its own cwd/branch so per-row actions stay correct.
+  //
+  // Pending rows sit in their project's own section rather than a separate
+  // "Starting" one. A section header names a project, and a project does not
+  // stop being itself while one of its servers boots: the old header went
+  // stale the moment a row failed, since "Starting" was then describing a row
+  // that had given up. Keeping the header constant also means nothing moves
+  // when the row resolves, because it was already in the section it was
+  // always going to land in.
+  type Group = {
+    key: string;
+    pending: [string, PendingStart][];
+    servers: DevServer[];
+  };
+  const groupsByKey = new Map<string, Group>();
+  const groupFor = (key: string) => {
+    const found = groupsByKey.get(key);
+    if (found) return found;
+    const made: Group = { key, pending: [], servers: [] };
+    groupsByKey.set(key, made);
+    return made;
+  };
+  // Pending first, so their projects lead the list purely by insertion order:
+  // something happening right now outranks something up for an hour.
+  for (const [cwd, entry] of visiblePending) {
+    groupFor(entry.projectKey).pending.push([cwd, entry]);
+  }
+  for (const s of visible) groupFor(s.projectKey).servers.push(s);
+
+  const grouped = (() => {
+    const all = [...groupsByKey.values()];
+    for (const g of all) g.servers.sort(byRecency);
+    const busy = all.filter((g) => g.pending.length > 0);
+    const idle = all
+      .filter((g) => g.pending.length === 0)
+      .sort((a, b) => byRecency(a.servers[0], b.servers[0]));
+    return [...busy, ...idle];
+  })();
+
+  // A section is titled for its project whether or not anything of it is
+  // running yet. Prefer a real server's name: a pending entry only knows the
+  // name the spawn target was given, while a server has been through project
+  // detection.
+  const groupTitle = (g: Group) =>
+    g.servers.length > 0
+      ? prefs.showFullPath
+        ? g.servers[0].cwd
+        : g.servers[0].projectName
+      : prefs.showFullPath
+        ? g.pending[0][0]
+        : g.pending[0][1].name;
   const visibleFailedCount = visiblePending.filter(
     ([, entry]) => entry.status === "failed",
   ).length;
@@ -1948,15 +1982,22 @@ export default function Command(
             }
           />
         )}
-      {visiblePending.length > 0 && (
+      {grouped.map((group) => (
         <List.Section
-          title={
-            visiblePending.every(([, e]) => e.kind === "restart")
-              ? "Restarting"
-              : "Starting"
+          key={group.key}
+          // When showFullPath is on, use a cwd as a concrete path hint. (For
+          // multi-worktree sections the per-row branch tag and its tooltip
+          // distinguish which worktree each row belongs to.)
+          title={groupTitle(group)}
+          subtitle={
+            group.servers.length > 0
+              ? `${group.servers.length} server${group.servers.length > 1 ? "s" : ""}`
+              : undefined
           }
         >
-          {visiblePending.map(([cwd, entry]) => (
+          {/* In flight first: it is the newest thing in the project, and it
+              becomes the row directly below it. */}
+          {group.pending.map(([cwd, entry]) => (
             <PendingItem
               key={pendingRowId(cwd)}
               // Namespaced so a synthetic id can never collide with a server
@@ -1972,22 +2013,7 @@ export default function Command(
               onRefresh={refresh}
             />
           ))}
-        </List.Section>
-      )}
-      {grouped.map(([projectKey, projectServers]) => (
-        <List.Section
-          key={projectKey}
-          title={
-            // When showFullPath is on, use the first row's cwd as a concrete
-            // path hint. (For multi-worktree sections the per-row branch tag
-            // and its tooltip distinguish which worktree each row belongs to.)
-            prefs.showFullPath
-              ? projectServers[0].cwd
-              : projectServers[0].projectName
-          }
-          subtitle={`${projectServers.length} server${projectServers.length > 1 ? "s" : ""}`}
-        >
-          {projectServers.map((server) => (
+          {group.servers.map((server) => (
             <ServerItem
               key={server.pid}
               id={String(server.pid)}
@@ -1997,7 +2023,7 @@ export default function Command(
               lanIp={lanIp}
               show={show}
               onKill={() => kill(server.pid)}
-              onKillProject={() => killProject(projectKey)}
+              onKillProject={() => killProject(group.key)}
               onKillAll={killAll}
               onRestart={() => restart(server)}
               onRefresh={refresh}
