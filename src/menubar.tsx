@@ -143,18 +143,16 @@ async function launchStartPicker(): Promise<void> {
   });
 }
 
-async function launchRecent(
-  recent: RecentProject,
-  autoOpen: boolean,
-): Promise<void> {
+async function launchRecent(recent: RecentProject): Promise<void> {
   await launchCommand({
     name: "index",
     type: LaunchType.UserInitiated,
     context: {
       spawn: {
         targets: [{ cwd: recent.cwd, name: recent.projectName }],
+        // No autoOpen: the dashboard reads that preference itself, so the
+        // menu bar cannot hand it a value that disagrees with the setting.
         confirmMulti: false,
-        autoOpen,
         showAutoOpenHint: false,
       },
     },
@@ -230,7 +228,6 @@ export default function Command() {
 
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const editorApp = prefs.editorApp;
-  const autoOpen = prefs.autoOpenInBrowser ?? false;
   const title =
     (prefs.showCount ?? true) && servers.length > 0
       ? String(servers.length)
@@ -387,7 +384,7 @@ export default function Command() {
               onAction={() => {
                 void (async () => {
                   await visitItem(recent);
-                  await launchRecent(recent, autoOpen);
+                  await launchRecent(recent);
                 })();
               }}
             />

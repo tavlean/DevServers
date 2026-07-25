@@ -683,11 +683,16 @@ interface SpawnRequest {
   // Multi-folder confirm gate, set by the Start command's preference.
   // Always false for single-target spawns (picker rows, folder picker).
   confirmMulti: boolean;
-  // Open each new server's URL in the browser when it binds.
-  autoOpen: boolean;
   // Attach a one-time "Auto-open in Browser?" CTA to the Starting toast.
   // The Start command pre-decides this based on a usage counter.
   showAutoOpenHint: boolean;
+  //
+  // Deliberately NOT carrying autoOpen. It is an extension-level preference,
+  // so every command already reads the same value, and the dashboard is where
+  // the opening happens. Passing it through here made a second source of
+  // truth for one setting, and the two disagreed: starting from the menu bar
+  // opened no tab while the identical start from the dashboard did. Whichever
+  // copy was wrong, a caller cannot get this wrong if it never supplies it.
 }
 
 interface DashboardLaunchContext {
@@ -760,7 +765,6 @@ type SpawnPhase =
       // the log is append-mode, so only bytes past this offset belong to the
       // current attempt (see diagnoseSpawnFailure).
       expecting: Map<string, { name: string; logStart: number }>;
-      autoOpen: boolean;
     }
   | { phase: "done" };
 
@@ -1160,6 +1164,10 @@ export default function Command(
   props: LaunchProps<{ launchContext?: DashboardLaunchContext }>,
 ) {
   const prefs = getPreferenceValues<Preferences.Index>();
+  // Read straight from the preference rather than from the launch context.
+  // It is extension-level, so this is the same value every caller would have
+  // sent, minus the chance of a caller sending a different one.
+  const autoOpen = prefs.autoOpenInBrowser ?? false;
   // Capture launchContext once at mount. The destructured props are new
   // identities every render, so reading via a ref keeps every effect's
   // closure stable.
@@ -1465,7 +1473,6 @@ export default function Command(
         expecting: new Map(
           succeeded.map((t) => [t.cwd, { name: t.name, logStart: t.logStart }]),
         ),
-        autoOpen: spawn.autoOpen,
       });
     })();
   }, [spawnState.phase, hasLoaded]);
@@ -1504,7 +1511,7 @@ export default function Command(
     // tore the dashboard away mid-glance a couple of seconds after a start.
     // Losing the window also loses everything else it was offering: copying
     // the URL for a different browser, opening a terminal on the project.
-    if (spawnState.autoOpen) {
+    if (autoOpen) {
       for (const cwd of expecting.keys()) {
         const s = servers.find((x) => x.cwd === cwd);
         if (s) openAutomatically(s.url);

@@ -144,8 +144,11 @@ async function launchSpawn(
       type: LaunchType.UserInitiated,
       context: {
         spawn: {
+          // No autoOpen: the dashboard reads that preference itself. It is
+          // extension-level, so sending a copy only creates a second value
+          // that can disagree with the real one. `options.autoOpen` is still
+          // used above, to decide whether the one-time hint is worth showing.
           targets,
-          autoOpen: options.autoOpen,
           confirmMulti: options.confirmMulti,
           showAutoOpenHint,
         },
