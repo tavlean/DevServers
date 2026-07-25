@@ -811,28 +811,46 @@ type PendingStart = {
   reason: SpawnFailure | null;
 };
 
-// Spinner geometry. Eight spokes stepping every 100ms puts one revolution at
-// 800ms, which reads as smooth without asking for many more frames than that.
-const SPINNER_SPOKES = 8;
+// Row ids for pending starts are namespaced so they can never collide with a
+// server row's, which is a bare pid. The prefix is also how the render-time
+// selection handoff recognizes a cursor parked on a pending row.
+const PENDING_ID_PREFIX = "starting:";
+
+function pendingRowId(cwd: string): string {
+  return `${PENDING_ID_PREFIX}${cwd}`;
+}
+
+// Spinner geometry. Twelve frames stepping every 100ms puts one revolution at
+// 1.2s, a 30 degree step. Fine enough to read as rotation rather than
+// ticking, without asking the row to re-render more than ten times a second.
+const SPINNER_FRAMES = 12;
 const SPINNER_FRAME_MS = 100;
-// Warm yellow, matching the Starting… tag. Hardcoded rather than tinted or
-// drawn in currentColor: Raycast gives a data-URI SVG no surrounding color
-// context, so a currentColor-only icon renders as a black square (the same
-// trap isMonochromeSvg exists to dodge for favicons).
-const SPINNER_COLOR = "#FFB800";
+// Neutral gray, readable on both the light and the dark theme. Hardcoded
+// rather than tinted or drawn in currentColor: Raycast gives a data-URI SVG
+// no surrounding color context, so a currentColor-only icon renders as a
+// black square (the same trap isMonochromeSvg exists to dodge for favicons).
+const SPINNER_COLOR = "#8E8E93";
+const SPINNER_RADIUS = 5.5;
+// Quarter of the circle is the moving head; the rest is the gap that rides
+// around behind it.
+const SPINNER_ARC = 2 * Math.PI * SPINNER_RADIUS * 0.25;
+const SPINNER_GAP = 2 * Math.PI * SPINNER_RADIUS - SPINNER_ARC;
 
 // One frame of a buffering spinner, as an SVG data URI. Raycast has no
 // animated icons and no per-row loading state, so the animation is frames we
-// swap ourselves. Spokes fade with distance behind the head, which is what
-// makes a stepped sequence read as continuous rotation.
+// swap ourselves: a faint full-circle track with a quarter-circle arc rotated
+// 30 degrees per frame over it, which is the same shape a CSS spinner draws
+// with stroke-dasharray.
 function spinnerIcon(frame: number): string {
-  const spokes = Array.from({ length: SPINNER_SPOKES }, (_, i) => {
-    const behind = (i - frame + SPINNER_SPOKES) % SPINNER_SPOKES;
-    const opacity = (1 - behind / SPINNER_SPOKES).toFixed(2);
-    const angle = i * (360 / SPINNER_SPOKES);
-    return `<line x1="8" y1="1.9" x2="8" y2="5" transform="rotate(${angle} 8 8)" opacity="${opacity}"/>`;
-  }).join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><g stroke="${SPINNER_COLOR}" stroke-width="1.7" stroke-linecap="round">${spokes}</g></svg>`;
+  const angle = frame * (360 / SPINNER_FRAMES);
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
+    `<g fill="none" stroke="${SPINNER_COLOR}" stroke-width="1.8" stroke-linecap="round">` +
+    `<circle cx="8" cy="8" r="${SPINNER_RADIUS}" opacity="0.22"/>` +
+    `<circle cx="8" cy="8" r="${SPINNER_RADIUS}"` +
+    ` stroke-dasharray="${SPINNER_ARC.toFixed(2)} ${SPINNER_GAP.toFixed(2)}"` +
+    ` transform="rotate(${angle} 8 8)"/>` +
+    `</g></svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
@@ -865,7 +883,7 @@ function PendingItem({
   useEffect(() => {
     if (!spinning) return;
     const id = setInterval(
-      () => setFrame((f) => (f + 1) % SPINNER_SPOKES),
+      () => setFrame((f) => (f + 1) % SPINNER_FRAMES),
       SPINNER_FRAME_MS,
     );
     return () => clearInterval(id);
@@ -1002,6 +1020,14 @@ export default function Command(
   const [selectedItemId, setSelectedItemId] = useState<string | undefined>(
     undefined,
   );
+  // Mirrored for the watch effect, which must not take `selectedItemId` as a
+  // dependency: that effect keys on `servers` and `spawnState`, and adding
+  // selection to it would re-run the whole detection body every time the user
+  // moved the cursor.
+  const selectedIdRef = useRef(selectedItemId);
+  useEffect(() => {
+    selectedIdRef.current = selectedItemId;
+  }, [selectedItemId]);
 
   // Starts in flight, keyed by cwd. Deliberately its own state slice rather
   // than synthetic entries in the useCachedPromise data: every kill and
@@ -1201,7 +1227,7 @@ export default function Command(
       // selection at the real pid on handoff). Without this the cursor sits
       // on whatever was selected before, and the row they are watching is
       // not the row ↵ would act on.
-      setSelectedItemId(`starting:${succeeded[0].cwd}`);
+      setSelectedItemId(pendingRowId(succeeded[0].cwd));
 
       // The watch effect below takes over, flipping the toast to Success once
       // every spawned cwd appears in the servers state (driven by the normal
@@ -1234,9 +1260,16 @@ export default function Command(
     // several were started at once, focus the first; the user can step through
     // the rest. Resolving by cwd picks whichever server is now listening for
     // that cwd, which is the freshly spawned one even after a kill+respawn.
-    const firstCwd = [...expecting.keys()][0];
-    const focusTarget = servers.find((x) => x.cwd === firstCwd);
-    if (focusTarget) setSelectedItemId(String(focusTarget.pid));
+    //
+    // Skipped while the cursor sits on a pending row: the render-time handoff
+    // has already carried it to that row's server, and that is the one the
+    // user was watching. Overriding it here would drag them to the first of a
+    // batch for no reason.
+    if (!selectedIdRef.current?.startsWith(PENDING_ID_PREFIX)) {
+      const firstCwd = [...expecting.keys()][0];
+      const focusTarget = servers.find((x) => x.cwd === firstCwd);
+      if (focusTarget) setSelectedItemId(String(focusTarget.pid));
+    }
 
     // Auto-open is the extension acting on its own, so it opens the tab
     // behind whatever the user is looking at. Raycast's `open()` activates
@@ -1303,7 +1336,7 @@ export default function Command(
         // Put the cursor on the first failed row so its remedies are one ↵
         // away. Safe to pin: this row has been on screen since the spawn, so
         // we are only re-pointing selection at an id the list already has.
-        setSelectedItemId(`starting:${missing[0][0]}`);
+        setSelectedItemId(pendingRowId(missing[0][0]));
       }
       // The rows carry the failure now, and the success path has its own
       // toast, so nothing is left for this one to say.
@@ -1556,6 +1589,25 @@ export default function Command(
     ([cwd]) => !servers.some((s) => s.cwd === cwd),
   );
 
+  // Hand the cursor across the same handoff the rows make, in render, for the
+  // same reason the rows are derived: an effect runs *after* the commit that
+  // dropped the pending row, so for one frame `selectedItemId` names a row
+  // that no longer exists. Raycast reacts to that by picking a row itself and
+  // reporting it through onSelectionChange, which lands in our state and wins
+  // over whatever the effect set a moment later. Resolving it here means the
+  // id never dangles, so there is nothing for Raycast to correct.
+  //
+  // Following the row the cursor is actually on also beats jumping to the
+  // first of a batch: with several starting at once, the user is watching a
+  // specific one.
+  const selectedPendingCwd = selectedItemId?.startsWith(PENDING_ID_PREFIX)
+    ? selectedItemId.slice(PENDING_ID_PREFIX.length)
+    : undefined;
+  const landed = selectedPendingCwd
+    ? servers.find((s) => s.cwd === selectedPendingCwd)
+    : undefined;
+  const effectiveSelectedItemId = landed ? String(landed.pid) : selectedItemId;
+
   return (
     <List
       isLoading={effectiveLoading}
@@ -1564,7 +1616,7 @@ export default function Command(
       // a start in flight is the thing the user is waiting on, so a query
       // must not demote it below the servers already running.
       filtering={{ keepSectionOrder: true }}
-      selectedItemId={selectedItemId}
+      selectedItemId={effectiveSelectedItemId}
       onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
       searchBarAccessory={
         availableTools.length > 1 ? (
@@ -1619,10 +1671,10 @@ export default function Command(
         <List.Section title="Starting">
           {visiblePending.map(([cwd, entry]) => (
             <PendingItem
-              key={`starting:${cwd}`}
+              key={pendingRowId(cwd)}
               // Namespaced so a synthetic id can never collide with a server
               // row's, which is a bare pid.
-              id={`starting:${cwd}`}
+              id={pendingRowId(cwd)}
               cwd={cwd}
               entry={entry}
               terminalApp={terminalApp}
