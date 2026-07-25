@@ -1084,13 +1084,19 @@ export default function Command(
         // log-action target, so the message and the log the user lands on
         // tell the same story even when several servers failed for
         // different reasons.
-        const diagnosed = missing
-          .map(([cwd, target]) => ({
-            cwd,
-            target,
-            reason: diagnoseSpawnFailure(cwd, target.logStart),
-          }))
-          .find((d): d is typeof d & { reason: SpawnFailure } => !!d.reason);
+        // Stops at the first diagnosable target: each check reads that
+        // project's log off disk, so there's no reason to keep going once
+        // we have a cause to report.
+        let diagnosed:
+          | { cwd: string; name: string; reason: SpawnFailure }
+          | undefined;
+        for (const [cwd, target] of missing) {
+          const reason = diagnoseSpawnFailure(cwd, target.logStart);
+          if (reason) {
+            diagnosed = { cwd, name: target.name, reason };
+            break;
+          }
+        }
         toast.style = Toast.Style.Failure;
         toast.title =
           missing.length === 1
@@ -1099,14 +1105,13 @@ export default function Command(
         toast.message = diagnosed
           ? SPAWN_FAILURE_MESSAGE[diagnosed.reason]
           : "Not detected after 15s. Check the startup log.";
-        const [logCwd, logTarget] = diagnosed
-          ? ([diagnosed.cwd, diagnosed.target] as const)
-          : missing[0];
+        const logCwd = diagnosed?.cwd ?? missing[0][0];
+        const logName = diagnosed?.name ?? missing[0][1].name;
         toast.primaryAction = {
           title: "View Startup Log",
           onAction: (t) => {
             t.hide().catch(() => {});
-            push(<SpawnLogView cwd={logCwd} name={logTarget.name} />);
+            push(<SpawnLogView cwd={logCwd} name={logName} />);
           },
         };
       } else {
