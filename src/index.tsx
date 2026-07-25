@@ -3,6 +3,7 @@ import {
   ActionPanel,
   Alert,
   Application,
+  Clipboard,
   Color,
   Detail,
   Icon,
@@ -716,16 +717,27 @@ type SpawnPhase =
 // user's time on a question we can already answer.
 type SpawnFailure = "port-conflict" | "portless-proxy-down";
 
-// Toast messages are plain text, not markdown, so these carry no backticks:
-// any formatting would render literally. The command leads the sentence
-// because a toast elides its message, and the command is the part the user
-// needs to keep.
-const SPAWN_FAILURE_MESSAGE: Record<SpawnFailure, string> = {
-  "port-conflict":
-    "Port conflict: a port is already in use by another process. See the startup log.",
-  "portless-proxy-down":
-    "Run portless service install: the portless proxy isn't running and can't start without a TTY.",
+// A toast gives us one short line. The title is the only part that reliably
+// survives, so the cause goes there and nothing that matters goes in the
+// message, which gets elided to a word or two behind a long title. The fix,
+// when we can name one, becomes an action instead of prose: a button can't be
+// truncated, and it saves retyping the command.
+const SPAWN_FAILURE: Record<SpawnFailure, { title: string; fix?: string }> = {
+  "port-conflict": { title: "Port already in use" },
+  "portless-proxy-down": {
+    title: "Portless proxy isn't running",
+    fix: "portless service install",
+  },
 };
+
+function copyFixAction(command: string): Toast.ActionOptions {
+  return {
+    title: "Copy Fix Command",
+    onAction: () => {
+      Clipboard.copy(command).catch(() => {});
+    },
+  };
+}
 
 // Whether the chunk of the startup log written by this spawn (from byte
 // `logStart`) shows the server dying for one of those reasons. Scoped to the
@@ -1097,23 +1109,30 @@ export default function Command(
             break;
           }
         }
-        toast.style = Toast.Style.Failure;
-        toast.title =
-          missing.length === 1
-            ? `${names} hasn't started yet`
-            : `${names} haven't started yet`;
-        toast.message = diagnosed
-          ? SPAWN_FAILURE_MESSAGE[diagnosed.reason]
-          : "Not detected after 15s. Check the startup log.";
         const logCwd = diagnosed?.cwd ?? missing[0][0];
         const logName = diagnosed?.name ?? missing[0][1].name;
-        toast.primaryAction = {
+        const viewLog: Toast.ActionOptions = {
           title: "View Startup Log",
           onAction: (t) => {
             t.hide().catch(() => {});
             push(<SpawnLogView cwd={logCwd} name={logName} />);
           },
         };
+        toast.style = Toast.Style.Failure;
+        // A named cause takes the title outright. The project name moves to
+        // the message, where being clipped costs nothing: it only answers
+        // "which one", and with one target the user already knows.
+        const failure = diagnosed && SPAWN_FAILURE[diagnosed.reason];
+        toast.title = failure
+          ? failure.title
+          : missing.length === 1
+            ? `${names} hasn't started`
+            : `${names} haven't started`;
+        toast.message = failure ? logName : undefined;
+        toast.primaryAction = failure?.fix
+          ? copyFixAction(failure.fix)
+          : viewLog;
+        toast.secondaryAction = failure?.fix ? viewLog : undefined;
       } else {
         toast?.hide().catch(() => {});
       }
@@ -1272,21 +1291,23 @@ export default function Command(
         pokeMenuBar();
       } else {
         const reason = diagnoseSpawnFailure(server.cwd, logStart);
-        toast.style = Toast.Style.Failure;
-        toast.title = "Restart timed out";
-        toast.message = reason
-          ? SPAWN_FAILURE_MESSAGE[reason]
-          : "Not detected after 10s. Check the startup log.";
-        // The diagnosed messages point at the log without spelling out its
-        // path, so give the restart toast the same way in as the spawn
-        // watchdog rather than making the user hunt through tmpdir.
-        toast.primaryAction = {
+        const failure = reason ? SPAWN_FAILURE[reason] : undefined;
+        // Same way in as the spawn watchdog, rather than making the user
+        // hunt through tmpdir for the path we used to print.
+        const viewLog: Toast.ActionOptions = {
           title: "View Startup Log",
           onAction: (t) => {
             t.hide().catch(() => {});
             push(<SpawnLogView cwd={server.cwd} name={server.projectName} />);
           },
         };
+        toast.style = Toast.Style.Failure;
+        toast.title = failure ? failure.title : "Restart timed out";
+        // message stays as the project name set on the "Restarting…" toast.
+        toast.primaryAction = failure?.fix
+          ? copyFixAction(failure.fix)
+          : viewLog;
+        toast.secondaryAction = failure?.fix ? viewLog : undefined;
       }
     } catch (err) {
       await showFailureToast(err, {
