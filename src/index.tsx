@@ -15,7 +15,6 @@ import {
   confirmAlert,
   getPreferenceValues,
   launchCommand,
-  open,
   openExtensionPreferences,
   showToast,
   useNavigation,
@@ -39,6 +38,7 @@ import {
   fetchServers,
   killProcess,
   killServer,
+  openInBackground,
   restartServer,
   spawnLogPath,
   startDevServer,
@@ -1181,6 +1181,12 @@ export default function Command(
         }
         return next;
       });
+      // Follow the thing the user just asked for, from the first row it has
+      // through to the server row it becomes (the watch effect re-points
+      // selection at the real pid on handoff). Without this the cursor sits
+      // on whatever was selected before, and the row they are watching is
+      // not the row ↵ would act on.
+      setSelectedItemId(`starting:${succeeded[0].cwd}`);
 
       // The watch effect below takes over, flipping the toast to Success once
       // every spawned cwd appears in the servers state (driven by the normal
@@ -1217,10 +1223,16 @@ export default function Command(
     const focusTarget = servers.find((x) => x.cwd === firstCwd);
     if (focusTarget) setSelectedItemId(String(focusTarget.pid));
 
+    // Auto-open is the extension acting on its own, so it opens the tab
+    // behind whatever the user is looking at. Raycast's `open()` activates
+    // the browser, and Raycast hides itself the moment it loses focus, which
+    // tore the dashboard away mid-glance a couple of seconds after a start.
+    // Losing the window also loses everything else it was offering: copying
+    // the URL for a different browser, opening a terminal on the project.
     if (spawnState.autoOpen) {
       for (const cwd of expecting.keys()) {
         const s = servers.find((x) => x.cwd === cwd);
-        if (s) open(s.url).catch(() => {});
+        if (s) openInBackground(s.url).catch(() => {});
       }
     }
     pokeMenuBar();

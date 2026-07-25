@@ -22,6 +22,20 @@ const execFileAsync = promisify(execFile);
 //   listListeners  → Get-NetTCPConnection -State Listen
 //   listCwds       → Win32_Process.ExecutablePath / CWD via WMI
 //   fetchAliases   → powershell -c "portless list"     (see aliases.ts)
+//   openInBackground → Start-Process (no direct -g equivalent)
+
+// Open a URL in the default browser without focusing it. Deliberately not
+// Raycast's `open()`: that activates the browser, and Raycast hides its own
+// window the moment it loses focus. For a URL the user asked for that is
+// right, but the auto-open on a server binding its port is something the
+// extension does on its own, and it should not yank the window out from
+// under someone who is still reading it.
+//
+// `open -g` is the only way to get a background activation on macOS; there
+// is no @raycast/api option for it.
+export async function openInBackground(url: string): Promise<void> {
+  await execFileAsync("/usr/bin/open", ["-g", url]);
+}
 
 interface RawProcess {
   pid: number;
