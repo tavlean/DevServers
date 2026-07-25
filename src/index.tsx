@@ -820,11 +820,18 @@ function pendingRowId(cwd: string): string {
   return `${PENDING_ID_PREFIX}${cwd}`;
 }
 
-// Spinner geometry. Twelve frames stepping every 70ms puts one revolution at
-// 840ms, a 30 degree step. Fine enough to read as rotation rather than
-// ticking, and the churn stays inside one row (see PendingItem).
+// Spinner geometry. Twelve frames stepping every 50ms puts one revolution at
+// 600ms, a 30 degree step, which sits close to the animated toast's spinner so
+// the two read as the same idea.
+//
+// 20 frames a second is the ceiling worth paying for. It costs one prop change
+// on one row, the frames are precomputed (see SPINNER_ICONS), and the interval
+// only runs while something is actually starting, so it is bounded by the 15s
+// watchdog. Going faster would buy little: past this the eye reads it as
+// continuous either way, while every extra frame is another render round trip
+// to Raycast.
 const SPINNER_FRAMES = 12;
-const SPINNER_FRAME_MS = 70;
+const SPINNER_FRAME_MS = 50;
 // Neutral gray, readable on both the light and the dark theme. Hardcoded
 // rather than tinted or drawn in currentColor: Raycast gives a data-URI SVG
 // no surrounding color context, so a currentColor-only icon renders as a
@@ -841,7 +848,7 @@ const SPINNER_GAP = 2 * Math.PI * SPINNER_RADIUS - SPINNER_ARC;
 // swap ourselves: a faint full-circle track with a quarter-circle arc rotated
 // 30 degrees per frame over it, which is the same shape a CSS spinner draws
 // with stroke-dasharray.
-function spinnerIcon(frame: number): string {
+function spinnerFrame(frame: number): string {
   const angle = frame * (360 / SPINNER_FRAMES);
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
@@ -853,6 +860,14 @@ function spinnerIcon(frame: number): string {
     `</g></svg>`;
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
+
+// The frames are a fixed set, so build them once at module load instead of
+// re-encoding an SVG twenty times a second. Leaves the animation as an array
+// index, which is what keeps the frame rate cheap enough to raise.
+const SPINNER_ICONS: readonly string[] = Array.from(
+  { length: SPINNER_FRAMES },
+  (_, frame) => spinnerFrame(frame),
+);
 
 // The synthetic row for a pending start. While starting it spins; once the
 // watchdog gives up it turns red and carries the remedies. A row can do that
@@ -893,7 +908,7 @@ function PendingItem({
     return (
       <List.Item
         id={id}
-        icon={spinnerIcon(frame)}
+        icon={SPINNER_ICONS[frame]}
         title={entry.name}
         accessories={[{ tag: { value: "Starting…", color: Color.Yellow } }]}
       />
