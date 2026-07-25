@@ -321,12 +321,16 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
 
   const log = (data ?? "").trim();
   const exists = fs.existsSync(logPath);
-  const body = log
+  // The body is the log and nothing else. The heading used to repeat the
+  // navigation title word for word, and the footer spelled out a tmpdir path
+  // long enough to wrap mid-token; between them they took the top and bottom
+  // of a view whose whole job is to show as many lines of output as possible.
+  // The path is still one keystroke away as Copy Log Path.
+  const markdown = log
     ? "```\n" + log + "\n```"
     : exists
       ? "_The log file exists but is empty. The process wrote no output before exiting._"
       : "_No startup log found. This server may have been started outside Dev Servers, so we never captured its output._";
-  const markdown = `# Startup log: ${name}\n\n${body}\n\n---\n\n\`${logPath}\``;
 
   return (
     <Detail
@@ -335,12 +339,9 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
       navigationTitle={`Startup log: ${name}`}
       actions={
         <ActionPanel>
-          <Action
-            title="Refresh"
-            icon={Icon.ArrowClockwise}
-            onAction={revalidate}
-            shortcut={{ modifiers: ["cmd"], key: "r" }}
-          />
+          {/* Refresh was the ↵ action, which this view had already made
+              pointless by tailing the file every 2s. Copying the log is what
+              you actually want next: into a search, an issue, or a chat. */}
           {log && <Action.CopyToClipboard title="Copy Log" content={log} />}
           {exists && (
             <Action.Open
@@ -349,7 +350,19 @@ function SpawnLogView({ cwd, name }: { cwd: string; name: string }) {
               icon={Icon.BlankDocument}
             />
           )}
+          <Action.CopyToClipboard
+            title="Copy Log Path"
+            icon={Icon.Clipboard}
+            content={logPath}
+            shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
+          />
           {exists && <Action.ShowInFinder path={logPath} />}
+          <Action
+            title="Refresh"
+            icon={Icon.ArrowClockwise}
+            onAction={revalidate}
+            shortcut={{ modifiers: ["cmd"], key: "r" }}
+          />
         </ActionPanel>
       }
     />
