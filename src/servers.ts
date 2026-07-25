@@ -587,7 +587,9 @@ export async function fetchServers(): Promise<DevServer[]> {
 }
 
 // macOS hands out dynamic ports from this range when a process binds port 0.
-const EPHEMERAL_PORT_MIN = 49152;
+// Exported because the dashboard needs the same notion of "not a port anyone
+// chose" while a project is mid-restart (see the pending-row filtering).
+export const EPHEMERAL_PORT_MIN = 49152;
 
 // Drop rows that are internal sockets of an already-listed server, on either
 // of two signals. Both require an OS-assigned port, which is the half that

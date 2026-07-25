@@ -3,7 +3,6 @@ import {
   ActionPanel,
   Alert,
   Application,
-  Clipboard,
   Color,
   Detail,
   Icon,
@@ -31,6 +30,7 @@ import {
   updateRecentFavicon,
 } from "./recents";
 import {
+  EPHEMERAL_PORT_MIN,
   fetchServers,
   killProcess,
   killServer,
@@ -775,9 +775,9 @@ const SPAWN_TIMEOUT_MS = 15000;
 
 // A toast gives us one short line. The title is the only part that reliably
 // survives, so the cause goes there and nothing that matters goes in the
-// message, which gets elided to a word or two behind a long title. The fix,
-// when we can name one, becomes an action instead of prose: a button can't be
-// truncated, and it saves retyping the command.
+// message. Both failure paths now report on a row rather than a toast, so the
+// title lands as the row's subtitle and the fix, when we can name one, is a
+// real action on that row.
 const SPAWN_FAILURE: Record<SpawnFailure, { title: string; fix?: string }> = {
   "port-conflict": { title: "Port already in use" },
   "portless-proxy-down": {
@@ -785,15 +785,6 @@ const SPAWN_FAILURE: Record<SpawnFailure, { title: string; fix?: string }> = {
     fix: "portless service install",
   },
 };
-
-function copyFixAction(command: string): Toast.ActionOptions {
-  return {
-    title: "Copy Fix Command",
-    onAction: () => {
-      Clipboard.copy(command).catch(() => {});
-    },
-  };
-}
 
 // Whether the chunk of the startup log written by this spawn (from byte
 // `logStart`) shows the server dying for one of those reasons. Scoped to the
@@ -860,7 +851,37 @@ type PendingStart = {
   status: "starting" | "failed";
   // Set when failed and diagnosable, else null.
   reason: SpawnFailure | null;
+  // What the row says while it waits, and how long a failure claims it gave
+  // the server (the spawn watchdog allows 15s, restart's own poll ~10s).
+  kind: "start" | "restart";
+  // Servers already holding this cwd when the row was made, plus the pid a
+  // restart is replacing. The row resolves only when some *other* server
+  // appears for the cwd.
+  //
+  // Without this a restart could never show a row: its cwd is already in
+  // `servers`, so the "cwd is present" test that resolves a cold start would
+  // fire immediately. It also keeps a restart honest in a project running
+  // several servers from one folder, where the survivors would otherwise
+  // resolve the row the moment it appeared.
+  //
+  // Empty for a cold start, which reduces the test to "any server for this
+  // cwd", the original rule.
+  ignorePids: readonly number[];
 };
+
+// The one question every part of the pending-row machinery asks: has a server
+// turned up that this row was waiting for? Visibility, state cleanup and the
+// selection handoff all route through here, so they can never disagree about
+// whether a row has resolved.
+function resolvingServer(
+  cwd: string,
+  entry: PendingStart,
+  servers: DevServer[],
+): DevServer | undefined {
+  return servers.find(
+    (s) => s.cwd === cwd && !entry.ignorePids.includes(s.pid),
+  );
+}
 
 // Row ids for pending starts are namespaced so they can never collide with a
 // server row's, which is a bare pid. The prefix is also how the render-time
@@ -1017,7 +1038,14 @@ function PendingItem({
         id={id}
         icon={SPINNER_ICONS[frame]}
         title={entry.name}
-        accessories={[{ tag: { value: "Starting…", color: Color.Yellow } }]}
+        accessories={[
+          {
+            tag: {
+              value: entry.kind === "restart" ? "Restarting…" : "Starting…",
+              color: Color.Yellow,
+            },
+          },
+        ]}
         actions={
           <ActionPanel>
             {/* Tailing the log of a server that is still booting is the one
@@ -1053,7 +1081,13 @@ function PendingItem({
       accessories={[
         {
           tag: { value: "Failed", color: Color.Red },
-          tooltip: failure ? failure.title : "Not detected after 15s",
+          // The two paths give the server different amounts of rope: the
+          // spawn watchdog waits 15s, restart's own poll about 10s.
+          tooltip: failure
+            ? failure.title
+            : entry.kind === "restart"
+              ? "Not detected after 10s"
+              : "Not detected after 15s",
         },
       ]}
       actions={
@@ -1111,7 +1145,6 @@ export default function Command(
   props: LaunchProps<{ launchContext?: DashboardLaunchContext }>,
 ) {
   const prefs = getPreferenceValues<Preferences.Index>();
-  const { push } = useNavigation();
   // Capture launchContext once at mount. The destructured props are new
   // identities every render, so reading via a ref keeps every effect's
   // closure stable.
@@ -1205,7 +1238,9 @@ export default function Command(
     setPendingStarts((prev) => {
       if (prev.size === 0) return prev;
       const next = new Map(prev);
-      for (const s of servers) next.delete(s.cwd);
+      for (const [cwd, entry] of prev) {
+        if (resolvingServer(cwd, entry, servers)) next.delete(cwd);
+      }
       return next.size === prev.size ? prev : next;
     });
   }, [servers]);
@@ -1390,6 +1425,9 @@ export default function Command(
             logStart: t.logStart,
             status: "starting",
             reason: null,
+            kind: "start",
+            // A cold start is resolved by any server for the cwd.
+            ignorePids: [],
           });
         }
         return next;
@@ -1640,6 +1678,22 @@ export default function Command(
     } catch {
       // No log yet; the respawn writes from byte 0.
     }
+    // The row goes up before the kill, so the project never blinks out of the
+    // list: the old row goes, this one is already standing in its place.
+    // ignorePids is every server that held this cwd a moment ago, so the row
+    // waits for a genuinely new one rather than resolving against a sibling
+    // or against the corpse of the server being replaced.
+    setPendingStarts((prev) =>
+      new Map(prev).set(server.cwd, {
+        name: server.projectName,
+        logStart,
+        status: "starting",
+        reason: null,
+        kind: "restart",
+        ignorePids: [...priorPids, server.pid],
+      }),
+    );
+    setSelectedItemId(pendingRowId(server.cwd));
     try {
       await mutate(restartServer(server), {
         optimisticUpdate: (current) =>
@@ -1669,35 +1723,31 @@ export default function Command(
       if (restored) {
         toast.style = Toast.Style.Success;
         toast.title = "Restarted";
-        // Focus the replacement: the cwd's server whose pid wasn't running
-        // before the kill. Falls back to any current server for the cwd in the
-        // unlikely case the new pid matches a prior one (pid reuse).
-        const sameCwd = serversRef.current.filter((s) => s.cwd === server.cwd);
-        const replacement =
-          sameCwd.find((s) => !priorPids.has(s.pid)) ?? sameCwd[0];
-        if (replacement) setSelectedItemId(String(replacement.pid));
+        // Selection has already followed the row across in render, and the
+        // cleanup effect drops the entry. Nothing to do here but the toast:
+        // the replacement is the newest server for this cwd, so the sort puts
+        // it at the top of its project and its project at the top of the list.
         pokeMenuBar();
       } else {
+        // Same surface as a failed start. A toast cannot hold the remedies
+        // past its own lifetime, and 10 seconds after a restart the Raycast
+        // window is usually already gone.
+        toast.hide().catch(() => {});
         const reason = diagnoseSpawnFailure(server.cwd, logStart);
-        const failure = reason ? SPAWN_FAILURE[reason] : undefined;
-        // Same way in as the spawn watchdog, rather than making the user
-        // hunt through tmpdir for the path we used to print.
-        const viewLog: Toast.ActionOptions = {
-          title: "View Startup Log",
-          onAction: (t) => {
-            t.hide().catch(() => {});
-            push(<SpawnLogView cwd={server.cwd} name={server.projectName} />);
-          },
-        };
-        toast.style = Toast.Style.Failure;
-        toast.title = failure ? failure.title : "Restart timed out";
-        // message stays as the project name set on the "Restarting…" toast.
-        toast.primaryAction = failure?.fix
-          ? copyFixAction(failure.fix)
-          : viewLog;
-        toast.secondaryAction = failure?.fix ? viewLog : undefined;
+        setPendingStarts((prev) => {
+          const entry = prev.get(server.cwd);
+          if (!entry) return prev;
+          return new Map(prev).set(server.cwd, {
+            ...entry,
+            status: "failed",
+            reason,
+          });
+        });
       }
     } catch (err) {
+      // The respawn never got off the ground, so there is nothing for a row
+      // to wait on. Drop it and let the error speak for itself.
+      dismissPending(server.cwd);
       await showFailureToast(err, {
         title: `Failed to restart ${server.projectName}`,
       });
@@ -1744,10 +1794,23 @@ export default function Command(
     return Array.from(seen).sort();
   }, [servers]);
 
+  // A project mid-start has a window where its helpers are listening and the
+  // dev server itself is not. suppressHelperRows can do nothing there: it
+  // recognises plumbing by a real server it can see, and there isn't one yet.
+  // The pending row is the missing evidence, so while one is up we refuse
+  // ephemeral-port rows for that cwd outright. Bounded by the row's own
+  // lifetime, so nothing stays hidden once the project settles.
+  const settling = new Set(
+    [...pendingStarts]
+      .filter(([, e]) => e.status === "starting")
+      .map(([c]) => c),
+  );
+  const listed = servers.filter(
+    (s) => !settling.has(s.cwd) || parseInt(s.port, 10) < EPHEMERAL_PORT_MIN,
+  );
+
   const visible =
-    toolFilter === "all"
-      ? servers
-      : servers.filter((s) => s.tool === toolFilter);
+    toolFilter === "all" ? listed : listed.filter((s) => s.tool === toolFilter);
 
   // Newest first, both within a section and across sections. `ps` hands us
   // PID order, which only loosely tracks start time and wraps around, so a
@@ -1792,7 +1855,7 @@ export default function Command(
   // render that lists the real one. If this were a stored flag there would be
   // a frame with neither row, and selection would jump to a stranger.
   const visiblePending = [...pendingStarts].filter(
-    ([cwd]) => !servers.some((s) => s.cwd === cwd),
+    ([cwd, entry]) => !resolvingServer(cwd, entry, servers),
   );
   const visibleFailedCount = visiblePending.filter(
     ([, entry]) => entry.status === "failed",
@@ -1812,9 +1875,13 @@ export default function Command(
   const selectedPendingCwd = selectedItemId?.startsWith(PENDING_ID_PREFIX)
     ? selectedItemId.slice(PENDING_ID_PREFIX.length)
     : undefined;
-  const landed = selectedPendingCwd
-    ? servers.find((s) => s.cwd === selectedPendingCwd)
+  const selectedPendingEntry = selectedPendingCwd
+    ? pendingStarts.get(selectedPendingCwd)
     : undefined;
+  const landed =
+    selectedPendingCwd && selectedPendingEntry
+      ? resolvingServer(selectedPendingCwd, selectedPendingEntry, servers)
+      : undefined;
   const effectiveSelectedItemId = landed ? String(landed.pid) : selectedItemId;
 
   return (
@@ -1882,7 +1949,13 @@ export default function Command(
           />
         )}
       {visiblePending.length > 0 && (
-        <List.Section title="Starting">
+        <List.Section
+          title={
+            visiblePending.every(([, e]) => e.kind === "restart")
+              ? "Restarting"
+              : "Starting"
+          }
+        >
           {visiblePending.map(([cwd, entry]) => (
             <PendingItem
               key={pendingRowId(cwd)}
