@@ -725,8 +725,8 @@ const SPAWN_FAILURE_MESSAGE: Record<SpawnFailure, string> = {
 
 // Whether the chunk of the startup log written by this spawn (from byte
 // `logStart`) shows the server dying for one of those reasons. Scoped to the
-// new bytes because earlier runs in the same log may have hit — and since
-// resolved — the same error.
+// new bytes because earlier runs in the same log may have hit the same error
+// and since resolved it.
 function diagnoseSpawnFailure(
   cwd: string,
   logStart: number,
@@ -742,10 +742,10 @@ function diagnoseSpawnFailure(
     if (/EADDRINUSE|address already in use/i.test(tail)) return "port-conflict";
     // A dev script wrapped in `portless run` needs the portless proxy up.
     // When it isn't, portless tries to auto-start it, finds no TTY to run
-    // sudo on — which is always the case for our detached spawn — and exits
-    // before the framework ever boots. Starting the proxy by hand once per
-    // reboot works but is exactly the manual step the extension exists to
-    // remove; the startup service makes it permanent.
+    // sudo on (always the case for our detached spawn) and exits before the
+    // framework ever boots. Starting the proxy by hand once per reboot works
+    // but is exactly the manual step the extension exists to remove; the
+    // startup service makes it permanent.
     if (/proxy is not running/i.test(tail)) return "portless-proxy-down";
     return null;
   } catch {
