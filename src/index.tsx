@@ -716,11 +716,15 @@ type SpawnPhase =
 // user's time on a question we can already answer.
 type SpawnFailure = "port-conflict" | "portless-proxy-down";
 
+// Toast messages are plain text, not markdown, so these carry no backticks:
+// any formatting would render literally. The command leads the sentence
+// because a toast elides its message, and the command is the part the user
+// needs to keep.
 const SPAWN_FAILURE_MESSAGE: Record<SpawnFailure, string> = {
   "port-conflict":
     "Port conflict: a port is already in use by another process. See the startup log.",
   "portless-proxy-down":
-    "The portless proxy isn't running and can't start without a TTY. Run `portless service install` once so it starts at boot.",
+    "Run portless service install: the portless proxy isn't running and can't start without a TTY.",
 };
 
 // Whether the chunk of the startup log written by this spawn (from byte
