@@ -710,23 +710,46 @@ type SpawnPhase =
     }
   | { phase: "done" };
 
+// Spawn failures worth naming on the watchdog toast. Both read as "the
+// extension broke" while the real cause, and the fix, sit outside the
+// extension entirely, so the generic "check the startup log" wastes the
+// user's time on a question we can already answer.
+type SpawnFailure = "port-conflict" | "portless-proxy-down";
+
+const SPAWN_FAILURE_MESSAGE: Record<SpawnFailure, string> = {
+  "port-conflict":
+    "Port conflict: a port is already in use by another process. See the startup log.",
+  "portless-proxy-down":
+    "The portless proxy isn't running and can't start without a TTY. Run `portless service install` once so it starts at boot.",
+};
+
 // Whether the chunk of the startup log written by this spawn (from byte
-// `logStart`) shows the server dying on a port conflict. That's the one
-// failure worth naming on the watchdog toast: it reads as "the extension
-// broke" but is really another process owning the port, and the fix
-// (kill the other server, or for Shopify themes let the auto-port pick a
-// free one) is nothing like debugging a crashed build. Scoped to the new
-// bytes because earlier runs in the same log may have hit — and since
+// `logStart`) shows the server dying for one of those reasons. Scoped to the
+// new bytes because earlier runs in the same log may have hit — and since
 // resolved — the same error.
-function spawnHitPortConflict(cwd: string, logStart: number): boolean {
+function diagnoseSpawnFailure(
+  cwd: string,
+  logStart: number,
+): SpawnFailure | null {
   try {
     const tail = fs
       .readFileSync(spawnLogPath(cwd))
       .subarray(logStart)
       .toString("utf8");
-    return /EADDRINUSE|address already in use/i.test(tail);
+    // Another process owns the port. The fix (kill the other server, or for
+    // Shopify themes let the auto-port pick a free one) is nothing like
+    // debugging a crashed build.
+    if (/EADDRINUSE|address already in use/i.test(tail)) return "port-conflict";
+    // A dev script wrapped in `portless run` needs the portless proxy up.
+    // When it isn't, portless tries to auto-start it, finds no TTY to run
+    // sudo on — which is always the case for our detached spawn — and exits
+    // before the framework ever boots. Starting the proxy by hand once per
+    // reboot works but is exactly the manual step the extension exists to
+    // remove; the startup service makes it permanent.
+    if (/proxy is not running/i.test(tail)) return "portless-proxy-down";
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -1028,23 +1051,30 @@ export default function Command(
       const toast = toastRef.current;
       if (toast && missing.length > 0) {
         const names = joinNames(missing.map(([, v]) => v.name));
-        // Name the failure when the log can: a port conflict gets a message
-        // that says what to do instead of the generic "check the log". The
-        // conflicted server (not just missing[0]) becomes the log-action
-        // target, so the message and the log the user lands on tell the
-        // same story even when several servers failed for different reasons.
-        const conflicted = missing.find(([cwd, v]) =>
-          spawnHitPortConflict(cwd, v.logStart),
-        );
+        // Name the failure when the log can: a recognized cause gets a
+        // message that says what to do instead of the generic "check the
+        // log". The diagnosed server (not just missing[0]) becomes the
+        // log-action target, so the message and the log the user lands on
+        // tell the same story even when several servers failed for
+        // different reasons.
+        const diagnosed = missing
+          .map(([cwd, target]) => ({
+            cwd,
+            target,
+            reason: diagnoseSpawnFailure(cwd, target.logStart),
+          }))
+          .find((d): d is typeof d & { reason: SpawnFailure } => !!d.reason);
         toast.style = Toast.Style.Failure;
         toast.title =
           missing.length === 1
             ? `${names} hasn't started yet`
             : `${names} haven't started yet`;
-        toast.message = conflicted
-          ? "Port conflict: a port is already in use by another process. See the startup log."
+        toast.message = diagnosed
+          ? SPAWN_FAILURE_MESSAGE[diagnosed.reason]
           : "Not detected after 15s. Check the startup log.";
-        const [logCwd, logTarget] = conflicted ?? missing[0];
+        const [logCwd, logTarget] = diagnosed
+          ? ([diagnosed.cwd, diagnosed.target] as const)
+          : missing[0];
         toast.primaryAction = {
           title: "View Startup Log",
           onAction: (t) => {

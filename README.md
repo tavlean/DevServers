@@ -26,6 +26,7 @@ See every dev server running on your Mac, grouped by project. Kill, restart, ope
 - Shopify support: themes start with `shopify theme dev` (with automatic port fallback when 9292 is taken), app roots with `shopify app dev`, and Hydrogen storefronts through their normal scripts
 - If a server doesn't bind a port within 15 seconds, the toast escalates with a **View Startup Log** action so you can see what went wrong
 - First-run note for Shopify: run `shopify theme dev --store <your-store>` once in a terminal so the CLI remembers your store; a background spawn can't answer its login prompt
+- Note for portless users: dev scripts wrapped in `portless run` need the portless proxy already running, since a background spawn has no TTY for its sudo prompt. Run `portless service install` once and the proxy starts at boot, so starts keep working after a reboot
 
 ## Menu Bar
 
