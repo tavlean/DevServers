@@ -31,6 +31,7 @@ import {
 } from "./recents";
 import {
   EPHEMERAL_PORT_MIN,
+  byRecency,
   fetchServers,
   killProcess,
   killServer,
@@ -1811,22 +1812,6 @@ export default function Command(
 
   const visible =
     toolFilter === "all" ? listed : listed.filter((s) => s.tool === toolFilter);
-
-  // Newest first, both within a section and across sections. `ps` hands us
-  // PID order, which only loosely tracks start time and wraps around, so a
-  // server started an hour ago can outrank one started seconds ago.
-  //
-  // Recency is what makes the Starting section read as one continuous place:
-  // a pending row at the top hands off to a server row immediately below it,
-  // instead of the new server being flung to wherever its PID happens to sort.
-  //
-  // PID breaks ties on purpose. `ps lstart` resolves only to the second, so a
-  // multi-target start produces identical timestamps, and a comparator that
-  // returned 0 there would leave those rows free to swap places on every poll.
-  // An unparseable lstart yields NaN, which is falsy, so it also falls through
-  // to PID rather than ordering at random.
-  const byRecency = (a: DevServer, b: DevServer) =>
-    b.startedAt.getTime() - a.startedAt.getTime() || b.pid - a.pid;
 
   // Which pending starts still deserve a row. Derived every render, never
   // stored: an entry shows only while `resolvingServer` finds nothing for it.

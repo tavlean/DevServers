@@ -634,6 +634,20 @@ function suppressHelperRows(
   });
 }
 
+// Newest first. Shared by the dashboard and the menu bar so the same servers
+// never appear in two different orders on two surfaces.
+//
+// `ps` hands back PID order, which only loosely tracks start time and wraps
+// around, so a server started an hour ago can outrank one started seconds
+// ago. PID breaks ties on purpose: `ps lstart` resolves only to the second, so
+// starting several at once produces identical timestamps, and a comparator
+// returning 0 there would leave those rows free to swap places on every poll.
+// An unparseable lstart yields NaN, which is falsy, so it also falls through
+// to PID rather than ordering at random.
+export function byRecency(a: DevServer, b: DevServer): number {
+  return b.startedAt.getTime() - a.startedAt.getTime() || b.pid - a.pid;
+}
+
 // User-initiated kill: SIGTERM (the default signal), graceful: the
 // dev server gets a chance to flush logs, close connections, etc. Use
 // this from the dashboard's Kill / Kill All flows. Pair with `killServer`

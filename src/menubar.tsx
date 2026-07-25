@@ -14,10 +14,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
 import { RecentProject, STORAGE_KEY } from "./recents";
 import {
+  byRecency,
   canonicalCwd,
   directoryExists,
   fetchServers,
   killServer,
+  reapProjectHelpers,
   restartServer,
 } from "./servers";
 import { readSnapshot, writeSnapshot } from "./snapshot";
@@ -111,13 +113,18 @@ function serverIcon(
     : tintedMenuIcon("server", toolColor(server.tool));
 }
 
+// Newest first, within a project and across them, matching the dashboard.
+// The same servers listed in two different orders on two surfaces reads as a
+// bug in whichever one you looked at second.
 function groupByProject(servers: DevServer[]): DevServer[][] {
   const groups = new Map<string, DevServer[]>();
-  for (const server of servers) {
+  for (const server of [...servers].sort(byRecency)) {
     const group = groups.get(server.projectKey) ?? [];
     group.push(server);
     groups.set(server.projectKey, group);
   }
+  // Insertion order already puts the project owning the newest server first,
+  // since that server was the first one seen.
   return [...groups.values()];
 }
 
@@ -283,6 +290,10 @@ export default function Command() {
                   onAction={() => {
                     void (async () => {
                       await killServer(server.pid);
+                      // Same cleanup the dashboard does. Killing from here
+                      // would otherwise strand the project's helpers, which
+                      // hold their ports until the machine restarts.
+                      await reapProjectHelpers(server.cwd);
                       await refresh();
                     })();
                   }}
@@ -338,6 +349,14 @@ export default function Command() {
                     // and one stale pid must not stop the rest of the project.
                     await Promise.allSettled(
                       projectServers.map((server) => killServer(server.pid)),
+                    );
+                    // Reap once per folder, after every server in it is down:
+                    // reapProjectHelpers backs out while any real server for
+                    // the cwd is still listening.
+                    await Promise.allSettled(
+                      [...new Set(projectServers.map((s) => s.cwd))].map(
+                        reapProjectHelpers,
+                      ),
                     );
                     await refresh();
                   })();
