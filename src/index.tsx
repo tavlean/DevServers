@@ -1224,6 +1224,15 @@ export default function Command(
         .map((s) => s.pid),
     );
     const baseline = priorPids.size;
+    // Same log baseline the spawn flow takes: a restart respawns through
+    // startDevServer, so it fails for the same nameable reasons and deserves
+    // the same diagnosis instead of a bare file path.
+    let logStart = 0;
+    try {
+      logStart = fs.statSync(spawnLogPath(server.cwd)).size;
+    } catch {
+      // No log yet; the respawn writes from byte 0.
+    }
     try {
       await mutate(restartServer(server), {
         optimisticUpdate: (current) =>
@@ -1262,9 +1271,22 @@ export default function Command(
         if (replacement) setSelectedItemId(String(replacement.pid));
         pokeMenuBar();
       } else {
+        const reason = diagnoseSpawnFailure(server.cwd, logStart);
         toast.style = Toast.Style.Failure;
         toast.title = "Restart timed out";
-        toast.message = `Check ${spawnLogPath(server.cwd)}`;
+        toast.message = reason
+          ? SPAWN_FAILURE_MESSAGE[reason]
+          : "Not detected after 10s. Check the startup log.";
+        // The diagnosed messages point at the log without spelling out its
+        // path, so give the restart toast the same way in as the spawn
+        // watchdog rather than making the user hunt through tmpdir.
+        toast.primaryAction = {
+          title: "View Startup Log",
+          onAction: (t) => {
+            t.hide().catch(() => {});
+            push(<SpawnLogView cwd={server.cwd} name={server.projectName} />);
+          },
+        };
       }
     } catch (err) {
       await showFailureToast(err, {
