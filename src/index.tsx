@@ -750,7 +750,14 @@ function diagnoseSpawnFailure(
     // framework ever boots. Starting the proxy by hand once per reboot works
     // but is exactly the manual step the extension exists to remove; the
     // startup service makes it permanent.
-    if (/proxy is not running/i.test(tail)) return "portless-proxy-down";
+    //
+    // Matched on portless's full sentence, "Proxy is not running and no TTY
+    // is available for sudo." Its shorter "Proxy is not running" lines come
+    // from `portless proxy stop` and `portless doctor`, which say nothing
+    // about a failed start, so the prefix alone would name this cause for a
+    // server that is merely slow to boot.
+    if (/proxy is not running and no tty/i.test(tail))
+      return "portless-proxy-down";
     return null;
   } catch {
     return null;
