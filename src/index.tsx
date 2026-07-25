@@ -731,15 +731,23 @@ const SPAWN_FAILURE_MESSAGE: Record<SpawnFailure, string> = {
 // `logStart`) shows the server dying for one of those reasons. Scoped to the
 // new bytes because earlier runs in the same log may have hit the same error
 // and since resolved it.
+//
+// Reads only this attempt's bytes rather than slurping the file: the log is
+// opened append-only and never rotated, so it holds every run for this cwd
+// until the OS clears tmpdir. Seeking past `logStart` also bounds the read to
+// what one 15-second attempt managed to write.
 function diagnoseSpawnFailure(
   cwd: string,
   logStart: number,
 ): SpawnFailure | null {
+  let fd: number | undefined;
   try {
-    const tail = fs
-      .readFileSync(spawnLogPath(cwd))
-      .subarray(logStart)
-      .toString("utf8");
+    fd = fs.openSync(spawnLogPath(cwd), "r");
+    const length = fs.fstatSync(fd).size - logStart;
+    if (length <= 0) return null;
+    const buf = Buffer.alloc(length);
+    fs.readSync(fd, buf, 0, length, logStart);
+    const tail = buf.toString("utf8");
     // Another process owns the port. The fix (kill the other server, or for
     // Shopify themes let the auto-port pick a free one) is nothing like
     // debugging a crashed build.
@@ -761,6 +769,14 @@ function diagnoseSpawnFailure(
     return null;
   } catch {
     return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Already closed / invalid fd; nothing to do.
+      }
+    }
   }
 }
 
