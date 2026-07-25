@@ -20,7 +20,11 @@ import {
   showToast,
   useNavigation,
 } from "@raycast/api";
-import { showFailureToast, useCachedPromise } from "@raycast/utils";
+import {
+  getProgressIcon,
+  showFailureToast,
+  useCachedPromise,
+} from "@raycast/utils";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -717,6 +721,11 @@ type SpawnPhase =
 // user's time on a question we can already answer.
 type SpawnFailure = "port-conflict" | "portless-proxy-down";
 
+// How long a spawned server gets to bind a port before we call it failed.
+// Shared so the pending row's progress ring runs out at the same instant the
+// watchdog fires, rather than drifting from a second copy of the number.
+const SPAWN_TIMEOUT_MS = 15000;
+
 // A toast gives us one short line. The title is the only part that reliably
 // survives, so the cause goes there and nothing that matters goes in the
 // message, which gets elided to a word or two behind a long title. The fix,
@@ -792,6 +801,104 @@ function diagnoseSpawnFailure(
   }
 }
 
+// A start the dashboard has fired but not yet seen bind a port, keyed by cwd
+// in `pendingStarts`. It renders as a synthetic list row (see PendingItem)
+// until the real server row takes over, or until the watchdog gives up on it.
+type PendingStart = {
+  // Project display name, from the spawn target.
+  name: string;
+  // Spawn-log byte offset at spawn time, copied from the phase's `expecting`
+  // map so a failed row can diagnose itself from this attempt's bytes alone.
+  logStart: number;
+  // Drives the progress ring toward SPAWN_TIMEOUT_MS.
+  startedAt: number;
+  status: "starting" | "failed";
+  // Set when failed and diagnosable, else null.
+  reason: SpawnFailure | null;
+};
+
+// The synthetic row for a pending start. While starting it counts a progress
+// ring toward the watchdog; once the watchdog gives up it turns red and
+// carries the remedies. A row can do that and a toast cannot: a toast's
+// actions die with it, and it degrades to an actionless HUD as soon as the
+// Raycast window closes, which is exactly when a 15-second failure lands.
+function PendingItem({
+  id,
+  cwd,
+  entry,
+  now,
+  terminalApp,
+  onDismiss,
+}: {
+  id: string;
+  cwd: string;
+  entry: PendingStart;
+  now: number;
+  terminalApp: Application;
+  onDismiss: () => void;
+}) {
+  const { push } = useNavigation();
+
+  if (entry.status === "starting") {
+    return (
+      <List.Item
+        id={id}
+        icon={getProgressIcon(
+          Math.min((now - entry.startedAt) / SPAWN_TIMEOUT_MS, 1),
+        )}
+        title={entry.name}
+        accessories={[{ tag: { value: "Starting…", color: Color.Yellow } }]}
+      />
+    );
+  }
+
+  const failure = entry.reason ? SPAWN_FAILURE[entry.reason] : undefined;
+  return (
+    <List.Item
+      id={id}
+      icon={{ source: Icon.XMarkCircle, tintColor: Color.Red }}
+      title={entry.name}
+      subtitle={failure?.title}
+      accessories={[
+        {
+          tag: { value: "Failed", color: Color.Red },
+          tooltip: failure ? failure.title : "Not detected after 15s",
+        },
+      ]}
+      actions={
+        <ActionPanel>
+          <Action
+            title="View Startup Log"
+            icon={Icon.Terminal}
+            shortcut={{ modifiers: ["cmd"], key: "l" }}
+            onAction={() => push(<SpawnLogView cwd={cwd} name={entry.name} />)}
+          />
+          {failure?.fix && (
+            <Action.CopyToClipboard
+              title="Copy Fix Command"
+              icon={Icon.Clipboard}
+              content={failure.fix}
+            />
+          )}
+          <Action.Open
+            title={`Open in ${terminalApp.name}`}
+            icon={Icon.Terminal}
+            target={cwd}
+            application={terminalApp}
+            shortcut={{ modifiers: ["cmd"], key: "t" }}
+          />
+          <Action
+            title="Dismiss"
+            icon={Icon.XMarkCircle}
+            shortcut={{ modifiers: ["cmd", "shift"], key: "d" }}
+            onAction={onDismiss}
+          />
+        </ActionPanel>
+      }
+    />
+  );
+}
+
 export default function Command(
   props: LaunchProps<{ launchContext?: DashboardLaunchContext }>,
 ) {
@@ -865,6 +972,49 @@ export default function Command(
   const [selectedItemId, setSelectedItemId] = useState<string | undefined>(
     undefined,
   );
+
+  // Starts in flight, keyed by cwd. Deliberately its own state slice rather
+  // than synthetic entries in the useCachedPromise data: every kill and
+  // restart handler runs an optimisticUpdate filter over that array typed as
+  // DevServer[], and a fake entry would flow through all of them.
+  const [pendingStarts, setPendingStarts] = useState<Map<string, PendingStart>>(
+    new Map(),
+  );
+
+  // A clock for the progress rings. Nothing else re-renders on a fixed
+  // cadence: fetchStableServers hands back the previous array reference when
+  // no server changed, so the poll alone would leave the rings frozen.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const starting = [...pendingStarts.values()].some(
+      (p) => p.status === "starting",
+    );
+    if (!starting) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [pendingStarts]);
+
+  // Forget entries whose cwd now has a real server row. This is bookkeeping
+  // only: visible rows are derived from the same `servers` array (see
+  // visiblePending), so the handoff already happened in the render that first
+  // listed the server, and this cleanup can land whenever it likes.
+  useEffect(() => {
+    setPendingStarts((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Map(prev);
+      for (const s of servers) next.delete(s.cwd);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [servers]);
+
+  function dismissPending(cwd: string) {
+    setPendingStarts((prev) => {
+      if (!prev.has(cwd)) return prev;
+      const next = new Map(prev);
+      next.delete(cwd);
+      return next;
+    });
+  }
 
   // Dashboard polling cadence. Faster only while actively watching for a
   // just-spawned server to bind a port, so it appears within ~1s. We do NOT
@@ -1012,6 +1162,26 @@ export default function Command(
         return;
       }
 
+      // Give every spawned target a row of its own straight away, so the
+      // dashboard shows what is in flight and already has somewhere to put the
+      // failure if the watchdog fires. Writing by cwd also means starting a
+      // project that currently shows a failed row resets that row instead of
+      // stacking a second one.
+      const startedAt = Date.now();
+      setPendingStarts((prev) => {
+        const next = new Map(prev);
+        for (const t of succeeded) {
+          next.set(t.cwd, {
+            name: t.name,
+            logStart: t.logStart,
+            startedAt,
+            status: "starting",
+            reason: null,
+          });
+        }
+        return next;
+      });
+
       // The watch effect below takes over, flipping the toast to Success once
       // every spawned cwd appears in the servers state (driven by the normal
       // polling, now at 1s).
@@ -1137,7 +1307,7 @@ export default function Command(
         toast?.hide().catch(() => {});
       }
       setSpawnState({ phase: "done" });
-    }, 15000);
+    }, SPAWN_TIMEOUT_MS);
     return () => clearTimeout(timer);
   }, [spawnState.phase]);
 
@@ -1374,10 +1544,24 @@ export default function Command(
     ),
   );
 
+  // Which pending starts still deserve a row. Derived every render, never
+  // stored: an entry shows only while its cwd is absent from `servers`.
+  // Reading the same array the server rows are built from is what makes the
+  // handoff atomic, since the synthetic row can only vanish in the very
+  // render that lists the real one. If this were a stored flag there would be
+  // a frame with neither row, and selection would jump to a stranger.
+  const visiblePending = [...pendingStarts].filter(
+    ([cwd]) => !servers.some((s) => s.cwd === cwd),
+  );
+
   return (
     <List
       isLoading={effectiveLoading}
       searchBarPlaceholder="Filter servers..."
+      // Search still filters natively, but the Starting section stays put:
+      // a start in flight is the thing the user is waiting on, so a query
+      // must not demote it below the servers already running.
+      filtering={{ keepSectionOrder: true }}
       selectedItemId={selectedItemId}
       onSelectionChange={(id) => setSelectedItemId(id ?? undefined)}
       searchBarAccessory={
@@ -1401,31 +1585,50 @@ export default function Command(
         ) : undefined
       }
     >
-      {servers.length === 0 && !effectiveLoading && (
-        <List.EmptyView
-          title="No Dev Servers Running"
-          description={`Refreshing every ${prefs.refreshInterval}s.`}
-          actions={
-            <ActionPanel>
-              <Action
-                title="Start Dev Server"
-                icon={Icon.Play}
-                onAction={openStartCommand}
-              />
-              <Action
-                title="Refresh"
-                icon={Icon.ArrowClockwise}
-                shortcut={{ modifiers: ["cmd"], key: "r" }}
-                onAction={refresh}
-              />
-              <Action
-                title="Open Extension Preferences"
-                icon={Icon.Gear}
-                onAction={openExtensionPreferences}
-              />
-            </ActionPanel>
-          }
-        />
+      {servers.length === 0 &&
+        visiblePending.length === 0 &&
+        !effectiveLoading && (
+          <List.EmptyView
+            title="No Dev Servers Running"
+            description={`Refreshing every ${prefs.refreshInterval}s.`}
+            actions={
+              <ActionPanel>
+                <Action
+                  title="Start Dev Server"
+                  icon={Icon.Play}
+                  onAction={openStartCommand}
+                />
+                <Action
+                  title="Refresh"
+                  icon={Icon.ArrowClockwise}
+                  shortcut={{ modifiers: ["cmd"], key: "r" }}
+                  onAction={refresh}
+                />
+                <Action
+                  title="Open Extension Preferences"
+                  icon={Icon.Gear}
+                  onAction={openExtensionPreferences}
+                />
+              </ActionPanel>
+            }
+          />
+        )}
+      {visiblePending.length > 0 && (
+        <List.Section title="Starting">
+          {visiblePending.map(([cwd, entry]) => (
+            <PendingItem
+              key={`starting:${cwd}`}
+              // Namespaced so a synthetic id can never collide with a server
+              // row's, which is a bare pid.
+              id={`starting:${cwd}`}
+              cwd={cwd}
+              entry={entry}
+              now={now}
+              terminalApp={terminalApp}
+              onDismiss={() => dismissPending(cwd)}
+            />
+          ))}
+        </List.Section>
       )}
       {grouped.map(([projectKey, projectServers]) => (
         <List.Section
