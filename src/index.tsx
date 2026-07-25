@@ -704,7 +704,7 @@ type SpawnPhase =
       phase: "spawning";
       // Keyed by cwd. `logStart` is the spawn log's byte size at spawn time:
       // the log is append-mode, so only bytes past this offset belong to the
-      // current attempt (see spawnHitPortConflict).
+      // current attempt (see diagnoseSpawnFailure).
       expecting: Map<string, { name: string; logStart: number }>;
       autoOpen: boolean;
     }
