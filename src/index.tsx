@@ -1238,17 +1238,20 @@ export default function Command(
     setSpawnState({ phase: "done" });
   }, [servers, spawnState]);
 
-  // Hard 15s timeout. If some expected servers still haven't bound a port,
-  // escalate the toast to a Failure that offers the startup log, since that's
-  // where the reason lives (e.g. portless needing sudo, a missing binary,
-  // a crashing build). A server that exits before binding is otherwise
-  // indistinguishable from one still booting, so without this the toast
-  // would just vanish and the user would have no thread to pull on.
+  // Hard 15s timeout. Any expected server that still hasn't bound a port turns
+  // its pending row red. A server that exits before binding is otherwise
+  // indistinguishable from one still booting, so without this the row would
+  // spin forever and the user would have no thread to pull on.
   //
-  // Wording stays soft ("not detected yet") because a genuinely slow build
-  // can exceed 15s; we assert "not seen", not "failed forever". `servers`
-  // is read from the ref so we compare against the latest poll, not the
-  // stale snapshot this effect closed over.
+  // The failure lands on the row rather than the toast because the remedies
+  // have to outlive the moment: a toast takes its actions with it when it
+  // goes, and it degrades to an actionless HUD whenever the Raycast window is
+  // closed, which is most of the time 15 seconds after a start. Each missing
+  // target diagnoses itself, so several servers failing for different reasons
+  // each say their own piece, which one toast line could never do.
+  //
+  // `servers` is read from the ref so we compare against the latest poll, not
+  // the stale snapshot this effect closed over.
   useEffect(() => {
     if (spawnState.phase !== "spawning") return;
     const expecting = spawnState.expecting;
@@ -1257,55 +1260,27 @@ export default function Command(
       const missing = [...expecting.entries()].filter(
         ([cwd]) => !present.has(cwd),
       );
-      const toast = toastRef.current;
-      if (toast && missing.length > 0) {
-        const names = joinNames(missing.map(([, v]) => v.name));
-        // Name the failure when the log can: a recognized cause gets a
-        // message that says what to do instead of the generic "check the
-        // log". The diagnosed server (not just missing[0]) becomes the
-        // log-action target, so the message and the log the user lands on
-        // tell the same story even when several servers failed for
-        // different reasons.
-        // Stops at the first diagnosable target: each check reads that
-        // project's log off disk, so there's no reason to keep going once
-        // we have a cause to report.
-        let diagnosed:
-          | { cwd: string; name: string; reason: SpawnFailure }
-          | undefined;
-        for (const [cwd, target] of missing) {
-          const reason = diagnoseSpawnFailure(cwd, target.logStart);
-          if (reason) {
-            diagnosed = { cwd, name: target.name, reason };
-            break;
+      if (missing.length > 0) {
+        const diagnosed = missing.map(
+          ([cwd, target]) =>
+            [cwd, diagnoseSpawnFailure(cwd, target.logStart)] as const,
+        );
+        setPendingStarts((prev) => {
+          const next = new Map(prev);
+          for (const [cwd, reason] of diagnosed) {
+            const entry = next.get(cwd);
+            if (entry) next.set(cwd, { ...entry, status: "failed", reason });
           }
-        }
-        const logCwd = diagnosed?.cwd ?? missing[0][0];
-        const logName = diagnosed?.name ?? missing[0][1].name;
-        const viewLog: Toast.ActionOptions = {
-          title: "View Startup Log",
-          onAction: (t) => {
-            t.hide().catch(() => {});
-            push(<SpawnLogView cwd={logCwd} name={logName} />);
-          },
-        };
-        toast.style = Toast.Style.Failure;
-        // A named cause takes the title outright. The project name moves to
-        // the message, where being clipped costs nothing: it only answers
-        // "which one", and with one target the user already knows.
-        const failure = diagnosed && SPAWN_FAILURE[diagnosed.reason];
-        toast.title = failure
-          ? failure.title
-          : missing.length === 1
-            ? `${names} hasn't started`
-            : `${names} haven't started`;
-        toast.message = failure ? logName : undefined;
-        toast.primaryAction = failure?.fix
-          ? copyFixAction(failure.fix)
-          : viewLog;
-        toast.secondaryAction = failure?.fix ? viewLog : undefined;
-      } else {
-        toast?.hide().catch(() => {});
+          return next;
+        });
+        // Put the cursor on the first failed row so its remedies are one ↵
+        // away. Safe to pin: this row has been on screen since the spawn, so
+        // we are only re-pointing selection at an id the list already has.
+        setSelectedItemId(`starting:${missing[0][0]}`);
       }
+      // The rows carry the failure now, and the success path has its own
+      // toast, so nothing is left for this one to say.
+      toastRef.current?.hide().catch(() => {});
       setSpawnState({ phase: "done" });
     }, SPAWN_TIMEOUT_MS);
     return () => clearTimeout(timer);
