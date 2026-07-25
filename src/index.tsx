@@ -14,6 +14,7 @@ import {
   confirmAlert,
   getPreferenceValues,
   launchCommand,
+  open,
   openExtensionPreferences,
   showToast,
   useNavigation,
@@ -875,6 +876,23 @@ type PendingStart = {
   ignorePids: readonly number[];
 };
 
+// Open a URL the user did not press a key for. Background is what we want, so
+// the dashboard is not torn away mid-glance, but never at the cost of the tab
+// itself: `openInBackground` shells out to `/usr/bin/open -g`, and a
+// subprocess has more ways to fail than an API call does. Swallowing that
+// failure turned "opened behind your window" into "nothing happened at all",
+// which is indistinguishable from the preference being off.
+//
+// So: try background, and if it will not go, fall back to Raycast's `open`.
+// Foreground is a worse outcome than background and a far better one than
+// silence. Which one you get is also the diagnosis, since a tab that steals
+// focus means the subprocess is being refused.
+function openAutomatically(url: string): void {
+  openInBackground(url).catch(() => {
+    open(url).catch(() => {});
+  });
+}
+
 // The one question every part of the pending-row machinery asks: has a server
 // turned up that this row was waiting for? Visibility, state cleanup and the
 // selection handoff all route through here, so they can never disagree about
@@ -1489,7 +1507,7 @@ export default function Command(
     if (spawnState.autoOpen) {
       for (const cwd of expecting.keys()) {
         const s = servers.find((x) => x.cwd === cwd);
-        if (s) openInBackground(s.url).catch(() => {});
+        if (s) openAutomatically(s.url);
       }
     }
     pokeMenuBar();
