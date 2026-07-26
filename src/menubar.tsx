@@ -14,10 +14,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
 import { RecentProject, STORAGE_KEY } from "./recents";
 import {
+  byRecency,
   canonicalCwd,
   directoryExists,
   fetchServers,
   killServer,
+  reapProjectHelpers,
   restartServer,
 } from "./servers";
 import { readSnapshot, writeSnapshot } from "./snapshot";
@@ -111,13 +113,18 @@ function serverIcon(
     : tintedMenuIcon("server", toolColor(server.tool));
 }
 
+// Newest first, within a project and across them, matching the dashboard.
+// The same servers listed in two different orders on two surfaces reads as a
+// bug in whichever one you looked at second.
 function groupByProject(servers: DevServer[]): DevServer[][] {
   const groups = new Map<string, DevServer[]>();
-  for (const server of servers) {
+  for (const server of [...servers].sort(byRecency)) {
     const group = groups.get(server.projectKey) ?? [];
     group.push(server);
     groups.set(server.projectKey, group);
   }
+  // Insertion order already puts the project owning the newest server first,
+  // since that server was the first one seen.
   return [...groups.values()];
 }
 
@@ -136,18 +143,16 @@ async function launchStartPicker(): Promise<void> {
   });
 }
 
-async function launchRecent(
-  recent: RecentProject,
-  autoOpen: boolean,
-): Promise<void> {
+async function launchRecent(recent: RecentProject): Promise<void> {
   await launchCommand({
     name: "index",
     type: LaunchType.UserInitiated,
     context: {
       spawn: {
         targets: [{ cwd: recent.cwd, name: recent.projectName }],
+        // No autoOpen: the dashboard reads that preference itself, so the
+        // menu bar cannot hand it a value that disagrees with the setting.
         confirmMulti: false,
-        autoOpen,
         showAutoOpenHint: false,
       },
     },
@@ -223,7 +228,6 @@ export default function Command() {
 
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const editorApp = prefs.editorApp;
-  const autoOpen = prefs.autoOpenInBrowser ?? false;
   const title =
     (prefs.showCount ?? true) && servers.length > 0
       ? String(servers.length)
@@ -283,6 +287,10 @@ export default function Command() {
                   onAction={() => {
                     void (async () => {
                       await killServer(server.pid);
+                      // Same cleanup the dashboard does. Killing from here
+                      // would otherwise strand the project's helpers, which
+                      // hold their ports until the machine restarts.
+                      await reapProjectHelpers(server.cwd);
                       await refresh();
                     })();
                   }}
@@ -339,6 +347,14 @@ export default function Command() {
                     await Promise.allSettled(
                       projectServers.map((server) => killServer(server.pid)),
                     );
+                    // Reap once per folder, after every server in it is down:
+                    // reapProjectHelpers backs out while any real server for
+                    // the cwd is still listening.
+                    await Promise.allSettled(
+                      [...new Set(projectServers.map((s) => s.cwd))].map(
+                        reapProjectHelpers,
+                      ),
+                    );
                     await refresh();
                   })();
                 }}
@@ -368,7 +384,7 @@ export default function Command() {
               onAction={() => {
                 void (async () => {
                   await visitItem(recent);
-                  await launchRecent(recent, autoOpen);
+                  await launchRecent(recent);
                 })();
               }}
             />
