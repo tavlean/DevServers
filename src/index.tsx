@@ -605,8 +605,14 @@ type SpawnPhase =
       phase: "spawning";
       // Keyed by cwd. `logStart` is the spawn log's byte size at spawn time:
       // the log is append-mode, so only bytes past this offset belong to the
-      // current attempt (see diagnoseSpawnFailure).
-      expecting: Map<string, { name: string; logStart: number }>;
+      // current attempt (see diagnoseSpawnFailure). `ignorePids` is the very
+      // array the cwd's pending row carries, so the watcher and the watchdog
+      // put the same question to resolvingServer that the row does, and go on
+      // being able to ask it after the cleanup effect has dropped the row.
+      expecting: Map<
+        string,
+        { name: string; logStart: number; ignorePids: readonly number[] }
+      >;
     }
   | { phase: "done" };
 
@@ -722,18 +728,18 @@ type PendingStart = {
   // What the row says while it waits, and how long a failure claims it gave
   // the server (the spawn watchdog allows 15s, restart's own poll ~10s).
   kind: "start" | "restart";
-  // Servers already holding this cwd when the row was made, plus the pid a
+  // Every pid listed for this cwd when the row was made, plus the pid a
   // restart is replacing. The row resolves only when some *other* server
   // appears for the cwd.
   //
-  // Without this a restart could never show a row: its cwd is already in
-  // `servers`, so the "cwd is present" test that resolves a cold start would
-  // fire immediately. It also keeps a restart honest in a project running
-  // several servers from one folder, where the survivors would otherwise
-  // resolve the row the moment it appeared.
+  // Without this the row could resolve against something that was already
+  // there: a sibling, when a project runs two servers from one folder, or the
+  // corpse of the server being replaced, which lingers in `servers` until the
+  // next poll clears it. Either one retires the row the instant it goes up,
+  // making a start that never binds a port look like a success.
   //
-  // Empty for a cold start, which reduces the test to "any server for this
-  // cwd", the original rule.
+  // A genuinely cold start has nothing holding its cwd, so this is empty and
+  // the test reduces to "a server on a deliberate port for this cwd".
   ignorePids: readonly number[];
 };
 
@@ -754,17 +760,31 @@ function openAutomatically(url: string): void {
   });
 }
 
-// The one question every part of the pending-row machinery asks: has a server
-// turned up that this row was waiting for? Visibility, state cleanup and the
-// selection handoff all route through here, so they can never disagree about
-// whether a row has resolved.
+// The one question every part of the pending-row machinery asks: has the
+// server this row was waiting for arrived? Visibility, state cleanup, the
+// selection handoff, the success watcher, the watchdog and the restart poll
+// all route through here, so they can never disagree about whether a row has
+// resolved.
+//
+// Two conditions, and both are about not mistaking something else for the
+// arrival:
+//
+//   1. A deliberate port. An OS-assigned one is plumbing, the same call
+//      suppressHelperRows and `settling` make, and while a start is in flight
+//      `settling` hides those rows outright. A workerd helper resolving the
+//      row would therefore retire the spinner in favour of a row the list is
+//      not even drawing, and the failure would never be diagnosed.
+//   2. A pid the row was not already looking at, per `ignorePids`.
 function resolvingServer(
   cwd: string,
-  entry: PendingStart,
+  entry: Pick<PendingStart, "ignorePids">,
   servers: DevServer[],
 ): DevServer | undefined {
   return servers.find(
-    (s) => s.cwd === cwd && !entry.ignorePids.includes(s.pid),
+    (s) =>
+      s.cwd === cwd &&
+      parseInt(s.port, 10) < EPHEMERAL_PORT_MIN &&
+      !entry.ignorePids.includes(s.pid),
   );
 }
 
@@ -1125,6 +1145,13 @@ export default function Command(
   const [pendingStarts, setPendingStarts] = useState<Map<string, PendingStart>>(
     new Map(),
   );
+  // Mirrored for the same reason selection is: the watchdog has to know which
+  // rows are still standing when it fires, and it cannot take `pendingStarts`
+  // as a dependency without restarting its 15s timer every time a row changes.
+  const pendingStartsRef = useRef(pendingStarts);
+  useEffect(() => {
+    pendingStartsRef.current = pendingStarts;
+  }, [pendingStarts]);
 
   // Forget entries whose cwd now has a real server row. This is bookkeeping
   // only: visible rows are derived from the same `servers` array (see
@@ -1268,13 +1295,22 @@ export default function Command(
       const spawned = await Promise.all(
         spawn.targets.map(async (t) => {
           const logStart = spawnLogOffset(t.cwd);
+          // Whatever holds this cwd right now is either a sibling the kill
+          // above left standing or the corpse of the server it just took down,
+          // which the poll has yet to clear. Never the server we are about to
+          // wait for. Taken once here and handed to both the pending row and
+          // the watchers below, so no two of them can disagree about which
+          // server counts as the arrival. Empty for a genuinely cold start.
+          const ignorePids = serversRef.current
+            .filter((s) => s.cwd === t.cwd)
+            .map((s) => s.pid);
           try {
             await startDevServer(t.cwd);
             await recordSeen({
               cwd: t.cwd,
               projectName: t.name,
             });
-            return { ...t, logStart };
+            return { ...t, logStart, ignorePids };
           } catch (err) {
             await showFailureToast(err, {
               title: `Failed to start ${t.name}`,
@@ -1318,8 +1354,7 @@ export default function Command(
             status: "starting",
             reason: null,
             kind: "start",
-            // A cold start is resolved by any server for the cwd.
-            ignorePids: [],
+            ignorePids: t.ignorePids,
           });
         }
         return next;
@@ -1337,29 +1372,45 @@ export default function Command(
       setSpawnState({
         phase: "spawning",
         expecting: new Map(
-          succeeded.map((t) => [t.cwd, { name: t.name, logStart: t.logStart }]),
+          succeeded.map((t) => [
+            t.cwd,
+            { name: t.name, logStart: t.logStart, ignorePids: t.ignorePids },
+          ]),
         ),
       });
     })();
   }, [spawnState.phase, hasLoaded]);
 
-  // Watch for every expected cwd to show up in the servers state.
-  // Drives the toast to Success and auto-hides after a brief beat.
+  // Watch for every expected start to land. Drives the toast to Success and
+  // auto-hides after a brief beat.
+  //
+  // "Landed" is the rows' own predicate, not the mere presence of the cwd in
+  // `servers`: a sibling server or the corpse of the one the pre-spawn kill
+  // took down would satisfy presence, and then a start that never bound a port
+  // would get a success toast and open somebody else's URL.
+  //
+  // The predicate is put to `expecting`, which carries each row's own
+  // ignorePids, rather than to the live pending entries. The cleanup effect
+  // above deletes an entry in the very render it resolves, so in a batch that
+  // lands one server at a time the early entries are already gone by the time
+  // the last one arrives. Reading state here would lose track of precisely the
+  // servers this effect then has to focus and open.
   useEffect(() => {
     if (spawnState.phase !== "spawning") return;
     const expecting = spawnState.expecting;
-    const remaining = new Map(expecting);
-    for (const s of servers) {
-      if (remaining.has(s.cwd)) remaining.delete(s.cwd);
+    const landed = new Map<string, DevServer>();
+    for (const [cwd, target] of expecting) {
+      const server = resolvingServer(cwd, target, servers);
+      if (!server) return;
+      landed.set(cwd, server);
     }
-    if (remaining.size > 0) return;
 
     // All expected servers detected. Move the cursor onto the newly started
     // server so the default ↵ action operates on it instead of whatever row
     // happened to be selected. When several were started at once, focus the
-    // first; the user can step through the rest. Resolving by cwd picks
-    // whichever server is now listening for that cwd, which is the freshly
-    // spawned one even after a kill+respawn.
+    // first; the user can step through the rest. The server to focus is the one
+    // the predicate resolved, which is the row the pending one just handed over
+    // to, rather than whatever else happens to share the cwd.
     //
     // Skipped while the cursor sits on a pending row: the render-time handoff
     // has already carried it to that row's server, and that is the one the
@@ -1367,7 +1418,7 @@ export default function Command(
     // batch for no reason.
     if (!selectedIdRef.current?.startsWith(PENDING_ID_PREFIX)) {
       const firstCwd = [...expecting.keys()][0];
-      const focusTarget = servers.find((x) => x.cwd === firstCwd);
+      const focusTarget = landed.get(firstCwd);
       if (focusTarget) setSelectedItemId(String(focusTarget.pid));
     }
 
@@ -1377,11 +1428,11 @@ export default function Command(
     // tore the dashboard away mid-glance a couple of seconds after a start.
     // Losing the window also loses everything else it was offering: copying
     // the URL for a different browser, opening a terminal on the project.
+    //
+    // Opens the resolving server's URL rather than the first server sharing
+    // the cwd, so a surviving sibling's URL is never the one that gets a tab.
     if (autoOpen) {
-      for (const cwd of expecting.keys()) {
-        const s = servers.find((x) => x.cwd === cwd);
-        if (s) openAutomatically(s.url);
-      }
+      for (const s of landed.values()) openAutomatically(s.url);
     }
     pokeMenuBar();
     const toast = toastRef.current;
@@ -1416,9 +1467,15 @@ export default function Command(
     if (spawnState.phase !== "spawning") return;
     const expecting = spawnState.expecting;
     const timer = setTimeout(() => {
-      const present = new Set(serversRef.current.map((s) => s.cwd));
+      // The same predicate the rows resolve on, so a start is only failed here
+      // while its row is still spinning. A cwd whose entry has gone is either
+      // one the predicate has already resolved (so it is not in here anyway) or
+      // one the user dismissed, and a row thrown away is not ours to fail or to
+      // move the cursor onto.
       const missing = [...expecting.entries()].filter(
-        ([cwd]) => !present.has(cwd),
+        ([cwd, target]) =>
+          pendingStartsRef.current.has(cwd) &&
+          !resolvingServer(cwd, target, serversRef.current),
       );
       if (missing.length > 0) {
         const diagnosed = missing.map(
@@ -1556,17 +1613,18 @@ export default function Command(
   }
 
   async function restart(server: DevServer) {
-    // Snapshot the project's server count BEFORE killing the old one so we
-    // can detect when a new server has bound a port. We use serversRef.current
-    // so we always see the latest state across the polling loop. The pid set
-    // (excluding the one we're about to kill) lets us single out the
-    // replacement afterwards so we can move the cursor onto it.
-    const priorPids = new Set(
-      serversRef.current
+    // Every pid holding this cwd before the kill, including the one being
+    // replaced. Hoisted because the pending row and the poll below both put it
+    // to resolvingServer: one array means the toast and the row can never
+    // disagree about whether the restart landed. A kill-resistant old listener
+    // used to make a bare count exceed its baseline while the row went on
+    // spinning, and a sibling exiting mid-window used to do the reverse.
+    const ignorePids = [
+      ...serversRef.current
         .filter((s) => s.cwd === server.cwd && s.pid !== server.pid)
         .map((s) => s.pid),
-    );
-    const baseline = priorPids.size;
+      server.pid,
+    ];
     // Same log baseline the spawn flow takes: a restart respawns through
     // startDevServer, so it fails for the same nameable reasons and deserves
     // the same diagnosis instead of a bare file path.
@@ -1584,7 +1642,7 @@ export default function Command(
         status: "starting",
         reason: null,
         kind: "restart",
-        ignorePids: [...priorPids, server.pid],
+        ignorePids,
       }),
     );
     setSelectedItemId(pendingRowId(server.cwd));
@@ -1599,17 +1657,15 @@ export default function Command(
         title: "Restarting…",
         message: server.projectName,
       });
-      // Poll at staggered intervals up to RESTART_WINDOW_S. Bail early as
-      // soon as the server count for this project rises above baseline (new
-      // port bound).
+      // Poll at staggered intervals up to RESTART_WINDOW_S. Bail early as soon
+      // as the row's own predicate finds the replacement, so "Restarted" and
+      // the spinner going away are the same event rather than two guesses at
+      // it.
       let restored = false;
       for (const delay of RESTART_POLL_DELAYS) {
         await new Promise((r) => setTimeout(r, delay));
         await revalidate();
-        const current = serversRef.current.filter(
-          (s) => s.cwd === server.cwd,
-        ).length;
-        if (current > baseline) {
+        if (resolvingServer(server.cwd, { ignorePids }, serversRef.current)) {
           restored = true;
           break;
         }
@@ -1623,9 +1679,10 @@ export default function Command(
           toast.hide().catch(() => {});
         }, 2500);
         // Selection has already followed the row across in render, and the
-        // cleanup effect drops the entry. Nothing to do here but the toast:
-        // the replacement is the newest server for this cwd, so the sort puts
-        // it at the top of its project and its project at the top of the list.
+        // cleanup effect drops the entry: both ran off the same predicate the
+        // poll just did. Nothing to do here but the toast. The server it
+        // resolved against is the newest for this cwd, so the sort puts it at
+        // the top of its project and its project at the top of the list.
         pokeMenuBar();
       } else {
         // Same surface as a failed start. A toast cannot hold the remedies
@@ -1634,6 +1691,9 @@ export default function Command(
         toast.hide().catch(() => {});
         const reason = diagnoseSpawnFailure(server.cwd, logStart);
         setPendingStarts((prev) => {
+          // Defensive only. The poll and the cleanup effect now share one
+          // predicate, so an entry already dropped means the restart landed,
+          // which is not this branch.
           const entry = prev.get(server.cwd);
           if (!entry) return prev;
           return new Map(prev).set(server.cwd, {
@@ -1721,6 +1781,10 @@ export default function Command(
   // handoff atomic, since the synthetic row can only vanish in the very
   // render that lists the real one. If this were a stored flag there would be
   // a frame with neither row, and selection would jump to a stranger.
+  //
+  // "The same array" holds because the predicate only ever resolves against a
+  // deliberate port, and `settling` above hides nothing on a deliberate port:
+  // the server that retires this row is always one `listed` is about to draw.
   const visiblePending = [...pendingStarts].filter(
     ([cwd, entry]) => !resolvingServer(cwd, entry, servers),
   );
