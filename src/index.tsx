@@ -879,13 +879,7 @@ function PendingItem({
   // silently did nothing on the row you were most likely looking at.
   const projectActions = (
     <ActionPanel.Section>
-      <Action.Open
-        title={`Open in ${terminalApp.name}`}
-        icon={Icon.Terminal}
-        target={cwd}
-        application={terminalApp}
-        shortcut={{ modifiers: ["cmd"], key: "t" }}
-      />
+      {/* Editor before terminal, the order server rows use. */}
       {editorApp && (
         <Action.Open
           title={`Open in ${editorApp.name}`}
@@ -895,6 +889,13 @@ function PendingItem({
           shortcut={{ modifiers: ["cmd"], key: "e" }}
         />
       )}
+      <Action.Open
+        title={`Open in ${terminalApp.name}`}
+        icon={Icon.Terminal}
+        target={cwd}
+        application={terminalApp}
+        shortcut={{ modifiers: ["cmd"], key: "t" }}
+      />
       <Action.ShowInFinder
         path={cwd}
         shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
