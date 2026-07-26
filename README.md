@@ -1,6 +1,6 @@
 # Dev Servers
 
-See every dev server running on your Mac, grouped by project. Kill, restart, open, or start servers without leaving Raycast, and keep a live count in your menu bar.
+See every dev server running on your Mac, organized by project rather than by port. Kill, restart, open, or start servers without leaving Raycast, and keep a live count in your menu bar.
 
 ## Commands
 
@@ -39,7 +39,3 @@ See every dev server running on your Mac, grouped by project. Kill, restart, ope
 ## Preferences
 
 Pick your terminal and editor apps once (shared by all commands), set the dashboard refresh interval and row accessories, choose whether new servers auto-open in the browser, and toggle the menu bar count.
-
-## How it differs from Port Manager
-
-Port Manager is built around ports; Dev Servers is built around projects. It shows only dev servers, knows their framework and package manager, and can restart or start them. The two are complementary.
