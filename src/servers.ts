@@ -1054,6 +1054,9 @@ export async function reapProjectHelpers(cwd: string): Promise<void> {
     const mine = listeners.filter((l) => cwdByPid.get(l.pid) === cwd);
     if (mine.some((l) => l.port < EPHEMERAL_PORT_MIN)) return;
     const pids = [...new Set(mine.map((l) => l.pid))];
+    // Nothing to signal, so skip the SIGTERM grace wait below. This is the
+    // common case: most projects have no helpers, and every spawn reaps first.
+    if (pids.length === 0) return;
     // Ask politely first: a helper that still has its wits about it should
     // get to close its sockets.
     for (const pid of pids) {
