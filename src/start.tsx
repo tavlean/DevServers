@@ -100,6 +100,9 @@ function guessFramework(cwd: string): string | undefined {
   if ("webpack" in deps) return "webpack";
   if ("parcel" in deps) return "parcel";
   if ("turbo" in deps) return "turbo";
+  // Below the bundlers on purpose: a Vite + Wrangler project is a Vite
+  // project that deploys to Cloudflare, but a wrangler-only one is a Worker.
+  if ("wrangler" in deps) return "wrangler";
   if ("esbuild" in deps) return "esbuild";
   return undefined;
 }
