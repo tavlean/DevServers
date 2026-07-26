@@ -26,6 +26,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
 import { detectFavicons } from "./favicons";
 import {
+  PendingStart,
+  SpawnFailure,
+  readPendingStarts,
+  writePendingStarts,
+} from "./pendingStore";
+import {
   recordSeen,
   recordSeenBatch,
   toRecent,
@@ -616,16 +622,18 @@ type SpawnPhase =
     }
   | { phase: "done" };
 
-// Spawn failures worth naming on the watchdog toast. Both read as "the
-// extension broke" while the real cause, and the fix, sit outside the
-// extension entirely, so the generic "check the startup log" wastes the
-// user's time on a question we can already answer.
-type SpawnFailure = "port-conflict" | "portless-proxy-down";
-
 // How long a spawned server gets to bind a port before the watchdog calls it
 // failed. Also spelled into the undiagnosed failed-row title, so the number
 // the user reads always matches the wait they actually got.
 const SPAWN_TIMEOUT_MS = 15000;
+
+// How long past its deadline a persisted pending row is still worth
+// rehydrating. Everything a failed row has to offer comes out of the spawn
+// log, which lives in tmpdir and is cleared on the OS's own schedule, so an
+// older row would put up remedies pointing at a file that is no longer there.
+// A day also matches what the row is for: a start that failed while the window
+// was closed is news the next time you look, not a week later.
+const PENDING_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // A restart polls on this staggered backoff instead of the watchdog; the sum
 // is the window its failed-row title quotes.
@@ -707,41 +715,6 @@ function diagnoseSpawnFailure(
     }
   }
 }
-
-// A start the dashboard has fired but not yet seen bind a port, keyed by cwd
-// in `pendingStarts`. It renders as a synthetic list row (see PendingItem)
-// until the real server row takes over, or until the watchdog gives up on it.
-type PendingStart = {
-  // Project display name, from the spawn target.
-  name: string;
-  // Which section the row belongs to. Taken from a running server for this
-  // cwd when there is one, so a restart lands among its siblings; otherwise
-  // the cwd stands in, which is what projectKey falls back to for a
-  // non-git project anyway.
-  projectKey: string;
-  // Spawn-log byte offset at spawn time, copied from the phase's `expecting`
-  // map so a failed row can diagnose itself from this attempt's bytes alone.
-  logStart: number;
-  status: "starting" | "failed";
-  // Set when failed and diagnosable, else null.
-  reason: SpawnFailure | null;
-  // What the row says while it waits, and how long a failure claims it gave
-  // the server (the spawn watchdog allows 15s, restart's own poll ~10s).
-  kind: "start" | "restart";
-  // Every pid listed for this cwd when the row was made, plus the pid a
-  // restart is replacing. The row resolves only when some *other* server
-  // appears for the cwd.
-  //
-  // Without this the row could resolve against something that was already
-  // there: a sibling, when a project runs two servers from one folder, or the
-  // corpse of the server being replaced, which lingers in `servers` until the
-  // next poll clears it. Either one retires the row the instant it goes up,
-  // making a start that never binds a port look like a success.
-  //
-  // A genuinely cold start has nothing holding its cwd, so this is empty and
-  // the test reduces to "a server on a deliberate port for this cwd".
-  ignorePids: readonly number[];
-};
 
 // Open a URL the user did not press a key for. Background is what we want, so
 // the dashboard is not torn away mid-glance, but never at the cost of the tab
@@ -1153,10 +1126,76 @@ export default function Command(
     pendingStartsRef.current = pendingStarts;
   }, [pendingStarts]);
 
+  // Flipped once the persisted rows have been merged in. Until then the
+  // write-through below holds its fire: the initial state is an empty map, and
+  // writing it would erase the very rows the rehydrate is on its way to read.
+  // State rather than a ref so the write-through runs the moment it flips,
+  // even when the merge added nothing: a mount that starts a server against
+  // empty storage must still persist that row without waiting for it to change
+  // again.
+  const [rehydrated, setRehydrated] = useState(false);
+
+  // Write-through, so what the dashboard knows survives the command being
+  // unloaded. Best-effort: a storage failure costs the next mount its rows and
+  // must never break the one that is running.
+  useEffect(() => {
+    if (!rehydrated) return;
+    writePendingStarts(pendingStarts).catch(() => {});
+  }, [pendingStarts, rehydrated]);
+
+  // Pick up starts fired by an earlier mount. Raycast unloads the command the
+  // moment the user pops back to root, which is usually well inside a start's
+  // window, so this mount routinely inherits rows nobody was left watching.
+  //
+  // Live entries win on a cwd collision: this mount fired them just now, and
+  // the persisted copy is at best the same row a write behind.
+  useEffect(() => {
+    void (async () => {
+      const persisted = await readPendingStarts();
+      const now = Date.now();
+      // Diagnosed up front rather than inside the updater: the read hits the
+      // filesystem synchronously, and an updater must stay callable twice.
+      const inherited = [...persisted]
+        .filter(([, entry]) => now <= entry.deadline + PENDING_MAX_AGE_MS)
+        .map(([cwd, entry]): [string, PendingStart] =>
+          entry.status === "starting" && now > entry.deadline
+            ? [
+                cwd,
+                {
+                  ...entry,
+                  status: "failed",
+                  reason: diagnoseSpawnFailure(cwd, entry.logStart),
+                },
+              ]
+            : [cwd, entry],
+        );
+      setRehydrated(true);
+      if (inherited.length === 0) return;
+      setPendingStarts((prev) => {
+        const next = new Map(prev);
+        for (const [cwd, entry] of inherited) {
+          if (!next.has(cwd)) next.set(cwd, entry);
+        }
+        // Selection is deliberately left alone. Nothing here happened while
+        // the user was looking, so none of it has earned the cursor.
+        return next.size === prev.size ? prev : next;
+      });
+    })();
+  }, []);
+
   // Forget entries whose cwd now has a real server row. This is bookkeeping
   // only: visible rows are derived from the same `servers` array (see
   // visiblePending), so the handoff already happened in the render that first
   // listed the server, and this cleanup can land whenever it likes.
+  //
+  // Keyed on the entries as well as on `servers` because a rehydrated row
+  // arrives without either one moving: `servers` hands back the previous array
+  // reference when a poll finds nothing changed, so a row for a server that
+  // has been running quietly since before this mount could otherwise sit in
+  // the map until something else on the machine moved. Invisible while it sat
+  // there, but it would surface the moment the user killed that server, as a
+  // failed row for a start that had in fact succeeded. Re-running on deletions
+  // is free: the second pass finds nothing and hands `prev` straight back.
   useEffect(() => {
     setPendingStarts((prev) => {
       if (prev.size === 0) return prev;
@@ -1166,7 +1205,7 @@ export default function Command(
       }
       return next.size === prev.size ? prev : next;
     });
-  }, [servers]);
+  }, [servers, pendingStarts]);
 
   function dismissPending(cwd: string) {
     setPendingStarts((prev) => {
@@ -1351,6 +1390,7 @@ export default function Command(
               serversRef.current.find((s) => s.cwd === t.cwd)?.projectKey ??
               t.cwd,
             logStart: t.logStart,
+            deadline: Date.now() + SPAWN_TIMEOUT_MS,
             status: "starting",
             reason: null,
             kind: "start",
@@ -1506,6 +1546,55 @@ export default function Command(
     return () => clearTimeout(timer);
   }, [spawnState.phase]);
 
+  // The same giving-up, driven by the rows instead of by the spawn phase. The
+  // watchdog above is armed by `spawnState`, which only the mount that fired
+  // the start ever has; a mount that inherited its rows from storage would
+  // leave them spinning forever. This one arms off the rows themselves, on the
+  // earliest deadline still outstanding, and re-arms whenever they change.
+  //
+  // It flips status and nothing else: no toast to hide, no selection to move,
+  // no phase to advance, because none of that belongs to a start this mount
+  // did not make. When both are armed at once they agree by construction. The
+  // sweep only ever flips entries that are still "starting" and overdue, so it
+  // is idempotent, and firing first costs nothing: the watchdog's own filter
+  // asks whether the row is still in the map, which a flipped row is, so it
+  // re-diagnoses from the same log offset, reaches the same reason, and goes
+  // on to pin selection exactly as it does today.
+  useEffect(() => {
+    const deadlines = [...pendingStarts.values()]
+      .filter((entry) => entry.status === "starting")
+      .map((entry) => entry.deadline);
+    if (deadlines.length === 0) return;
+    const timer = setTimeout(
+      () => {
+        const now = Date.now();
+        const overdue = [...pendingStartsRef.current].filter(
+          ([, entry]) => entry.status === "starting" && entry.deadline <= now,
+        );
+        if (overdue.length === 0) return;
+        const diagnosed = overdue.map(
+          ([cwd, entry]) =>
+            [cwd, diagnoseSpawnFailure(cwd, entry.logStart)] as const,
+        );
+        setPendingStarts((prev) => {
+          const next = new Map(prev);
+          let flipped = false;
+          for (const [cwd, reason] of diagnosed) {
+            const entry = next.get(cwd);
+            if (entry?.status !== "starting" || entry.deadline > now) continue;
+            next.set(cwd, { ...entry, status: "failed", reason });
+            flipped = true;
+          }
+          // Handing back `prev` when nothing qualified keeps this effect from
+          // re-arming on a map that only changed identity.
+          return flipped ? next : prev;
+        });
+      },
+      Math.max(0, Math.min(...deadlines) - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [pendingStarts]);
+
   // Every observed server feeds the recents store, so the Start Recent
   // Dev Server picker has an up-to-date list of projects without the user
   // having to bookmark anything explicitly. Dedup by cwd within a single
@@ -1639,6 +1728,11 @@ export default function Command(
         name: server.projectName,
         projectKey: server.projectKey,
         logStart,
+        // The restart runs its own poll rather than the watchdog, so the
+        // deadline trails that window by a beat: a sweep on a later mount must
+        // never call a start failed while the poll that owns it is still
+        // asking.
+        deadline: Date.now() + RESTART_WINDOW_S * 1000 + 2000,
         status: "starting",
         reason: null,
         kind: "restart",
