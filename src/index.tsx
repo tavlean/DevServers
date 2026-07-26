@@ -38,7 +38,7 @@ import {
   killProcess,
   killServer,
   openInBackground,
-  reapProjectHelpers,
+  reapProjectHelpersWhenDown,
   restartServer,
   spawnLogPath,
   startDevServer,
@@ -1474,10 +1474,12 @@ export default function Command(
           (current ?? []).filter((s) => s.pid !== pid),
         rollbackOnError: true,
       });
-      // Take the project's leftover helpers with it. reapProjectHelpers backs
-      // out on its own if another server is still serving this cwd, so a
-      // project running two dev servers keeps the survivor's plumbing.
-      if (cwd) await reapProjectHelpers(cwd);
+      // Take the project's leftover helpers with it: the kill above does not.
+      // It is a bare SIGTERM that returns before the port is released, so the
+      // helper waits for the project to actually go down. It backs out if
+      // another server is still serving this cwd once it does, so a project
+      // running two dev servers keeps the survivor's plumbing.
+      if (cwd) await reapProjectHelpersWhenDown([cwd]);
       pokeMenuBar();
     } catch (err) {
       await showFailureToast(err, { title: "Failed to kill server" });
@@ -1502,9 +1504,10 @@ export default function Command(
       await mutate(
         (async () => {
           await Promise.all(targets.map((s) => killProcess(s.pid)));
-          await Promise.all(
-            [...new Set(targets.map((s) => s.cwd))].map(reapProjectHelpers),
-          );
+          // Killing does not take the helpers with it, and SIGTERM returns
+          // before the servers release their ports, so this waits for each
+          // folder to go quiet before reaping it.
+          await reapProjectHelpersWhenDown(targets.map((s) => s.cwd));
         })(),
         {
           optimisticUpdate: (current) =>
@@ -1536,9 +1539,10 @@ export default function Command(
       await mutate(
         (async () => {
           await Promise.all(servers.map((s) => killProcess(s.pid)));
-          await Promise.all(
-            [...new Set(servers.map((s) => s.cwd))].map(reapProjectHelpers),
-          );
+          // Killing does not take the helpers with it, and SIGTERM returns
+          // before the servers release their ports, so this waits for each
+          // folder to go quiet before reaping it.
+          await reapProjectHelpersWhenDown(servers.map((s) => s.cwd));
         })(),
         {
           optimisticUpdate: () => [],

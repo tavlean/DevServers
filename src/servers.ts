@@ -1057,7 +1057,24 @@ export async function killServer(pid: number): Promise<void> {
   }
 }
 
-// Kill the ephemeral-port helpers a dead dev server left behind.
+// Who is listening, and out of which folder. One pair of lsof calls, taken
+// once and handed to every cwd a reap looks at, so waiting on four projects
+// costs the same sweep as waiting on one.
+interface ListenerSnapshot {
+  listeners: RawListener[];
+  cwdByPid: Map<number, string>;
+}
+
+async function snapshotListeners(): Promise<ListenerSnapshot> {
+  const listeners = await listListeners();
+  // listCwds skips its own lsof on an empty pid list, so no guard needed here.
+  const cwdByPid = await listCwds([...new Set(listeners.map((l) => l.pid))]);
+  return { listeners, cwdByPid };
+}
+
+// Kill the ephemeral-port helpers a dead dev server left behind, judging the
+// project by a snapshot the caller took. Returns false, having touched
+// nothing, when the project is still up; see below.
 //
 // Killing the dev server does not take them with it. Miniflare's workerd is
 // launched by an intermediate process that then exits, so workerd is adopted
@@ -1069,9 +1086,11 @@ export async function killServer(pid: number): Promise<void> {
 // the whole accumulated pile surfaced in the gap between the old server dying
 // and the new one binding. Reaping is what stops the pile existing.
 //
-// Call only with the project down. If anything is still serving this cwd on a
+// Only with the project down. If anything is still serving this cwd on a
 // deliberate port, we touch nothing: that server owns helpers we have no way
-// of telling apart from these.
+// of telling apart from these. That is what the false return says, and a
+// caller that has just killed the project reads it as "not down yet, ask
+// again".
 //
 // And only orphans die. Sharing a cwd is not enough to make a process ours:
 // a standalone `vitest --ui` or a throwaway `http.createServer(0)` script,
@@ -1082,54 +1101,103 @@ export async function killServer(pid: number): Promise<void> {
 // nothing: every helper we exist to remove is by definition an orphan, since
 // unix reparents to init the instant a parent exits, including the parent we
 // killed a few milliseconds ago.
+async function reapHelpersFromSnapshot(
+  cwd: string,
+  { listeners, cwdByPid }: ListenerSnapshot,
+): Promise<boolean> {
+  const mine = listeners.filter((l) => cwdByPid.get(l.pid) === cwd);
+  if (mine.some((l) => l.port < EPHEMERAL_PORT_MIN)) return false;
+  const candidates = [...new Set(mine.map((l) => l.pid))];
+  // Nothing to signal, so skip the ps call and the SIGTERM grace wait below.
+  // This is the common case: most projects have no helpers, and every spawn
+  // reaps first.
+  if (candidates.length === 0) return true;
+  // Keep only what nothing is parenting. A pid that has gone away since the
+  // lsof has no ppid here and drops out with them, which is right: there is
+  // nothing left to signal.
+  const ppidByPid = await listParents(candidates);
+  const pids = candidates.filter((pid) => {
+    const ppid = ppidByPid.get(pid);
+    return ppid !== undefined && ppid <= 1;
+  });
+  if (pids.length === 0) return true;
+  // Ask politely first: a helper that still has its wits about it should
+  // get to close its sockets.
+  for (const pid of pids) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Already gone, or not ours to signal. Either way, nothing to do.
+    }
+  }
+  // Then insist. An orphaned workerd ignores SIGTERM outright: its shutdown
+  // path wants the supervisor that launched it, and that process is exactly
+  // what died to orphan it. Verified on a live one, which sat through
+  // SIGTERM and went down on SIGKILL. Without this the reap silently no-ops
+  // against the very processes it exists to remove, and worse, it does so
+  // only sometimes: a helper orphaned seconds ago still answers.
+  await new Promise((r) => setTimeout(r, 300));
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 0);
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Signal 0 threw, so it is already gone. Nothing to escalate to.
+    }
+  }
+  return true;
+}
+
+// Reap a project's helpers right now, or not at all. For the pre-spawn path,
+// where the project is expected to be down already and any waiting would be
+// dead latency on every start: if a server is still listening for this cwd we
+// simply leave its plumbing alone, which is also what makes starting a second
+// server beside a running one safe.
 export async function reapProjectHelpers(cwd: string): Promise<void> {
   try {
-    const listeners = await listListeners();
-    if (listeners.length === 0) return;
-    const cwdByPid = await listCwds([...new Set(listeners.map((l) => l.pid))]);
-    const mine = listeners.filter((l) => cwdByPid.get(l.pid) === cwd);
-    if (mine.some((l) => l.port < EPHEMERAL_PORT_MIN)) return;
-    const candidates = [...new Set(mine.map((l) => l.pid))];
-    // Nothing to signal, so skip the ps call and the SIGTERM grace wait below.
-    // This is the common case: most projects have no helpers, and every spawn
-    // reaps first.
-    if (candidates.length === 0) return;
-    // Keep only what nothing is parenting. A pid that has gone away since the
-    // lsof has no ppid here and drops out with them, which is right: there is
-    // nothing left to signal.
-    const ppidByPid = await listParents(candidates);
-    const pids = candidates.filter((pid) => {
-      const ppid = ppidByPid.get(pid);
-      return ppid !== undefined && ppid <= 1;
-    });
-    if (pids.length === 0) return;
-    // Ask politely first: a helper that still has its wits about it should
-    // get to close its sockets.
-    for (const pid of pids) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // Already gone, or not ours to signal. Either way, nothing to do.
+    await reapHelpersFromSnapshot(cwd, await snapshotListeners());
+  } catch {
+    // Reaping is hygiene layered on top of the kill or spawn the user asked
+    // for. A failure here must never surface as a failed kill or restart.
+  }
+}
+
+// Up to ~1.5s of waiting, in rounds this far apart. A SIGTERMed Vite or
+// wrangler releases its port in well under a second; anything slower than the
+// whole budget is a server we are better off not reaping under.
+const REAP_WAIT_ROUNDS = 6;
+const REAP_WAIT_INTERVAL_MS = 300;
+
+// Reap several projects' helpers once each project is actually down.
+//
+// For the kill paths. The dashboard's Kill is a bare SIGTERM that returns the
+// instant the signal is delivered, so the dev server is still holding its port
+// when we get control back, and a reap taken at that moment sees a live server
+// and declines. Polling is what closes that gap: each round takes one snapshot
+// for all the folders still waiting, reaps the ones that have gone quiet, and
+// leaves the rest for the next round. A cwd still on a deliberate port when
+// the budget runs out is left alone, exactly as a single immediate attempt
+// would have left it.
+export async function reapProjectHelpersWhenDown(
+  cwds: string[],
+): Promise<void> {
+  const pending = new Set(cwds);
+  if (pending.size === 0) return;
+  try {
+    for (let round = 0; round < REAP_WAIT_ROUNDS && pending.size > 0; round++) {
+      if (round > 0) {
+        await new Promise((r) => setTimeout(r, REAP_WAIT_INTERVAL_MS));
       }
-    }
-    // Then insist. An orphaned workerd ignores SIGTERM outright: its shutdown
-    // path wants the supervisor that launched it, and that process is exactly
-    // what died to orphan it. Verified on a live one, which sat through
-    // SIGTERM and went down on SIGKILL. Without this the reap silently no-ops
-    // against the very processes it exists to remove, and worse, it does so
-    // only sometimes: a helper orphaned seconds ago still answers.
-    await new Promise((r) => setTimeout(r, 300));
-    for (const pid of pids) {
-      try {
-        process.kill(pid, 0);
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // Signal 0 threw, so it is already gone. Nothing to escalate to.
-      }
+      const snapshot = await snapshotListeners();
+      const done = await Promise.all(
+        [...pending].map(async (cwd) =>
+          (await reapHelpersFromSnapshot(cwd, snapshot)) ? cwd : null,
+        ),
+      );
+      for (const cwd of done) if (cwd !== null) pending.delete(cwd);
     }
   } catch {
-    // Reaping is hygiene layered on top of the kill the user asked for.
-    // A failure here must never surface as a failed kill or restart.
+    // Same contract as reapProjectHelpers: hygiene, never a failed kill.
   }
 }
 

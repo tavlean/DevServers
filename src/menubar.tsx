@@ -19,7 +19,7 @@ import {
   directoryExists,
   fetchServers,
   killServer,
-  reapProjectHelpers,
+  reapProjectHelpersWhenDown,
   restartServer,
 } from "./servers";
 import { readSnapshot, writeSnapshot } from "./snapshot";
@@ -289,8 +289,10 @@ export default function Command() {
                       await killServer(server.pid);
                       // Same cleanup the dashboard does. Killing from here
                       // would otherwise strand the project's helpers, which
-                      // hold their ports until the machine restarts.
-                      await reapProjectHelpers(server.cwd);
+                      // hold their ports until the machine restarts. killServer
+                      // already waited for the process to exit, so the reap's
+                      // first look finds the port free and it returns at once.
+                      await reapProjectHelpersWhenDown([server.cwd]);
                       await refresh();
                     })();
                   }}
@@ -348,12 +350,11 @@ export default function Command() {
                       projectServers.map((server) => killServer(server.pid)),
                     );
                     // Reap once per folder, after every server in it is down:
-                    // reapProjectHelpers backs out while any real server for
-                    // the cwd is still listening.
-                    await Promise.allSettled(
-                      [...new Set(projectServers.map((s) => s.cwd))].map(
-                        reapProjectHelpers,
-                      ),
+                    // killing a server strands its helpers, and a reap taken
+                    // while any real server for the cwd is still listening
+                    // backs out rather than touch that server's plumbing.
+                    await reapProjectHelpersWhenDown(
+                      projectServers.map((s) => s.cwd),
                     );
                     await refresh();
                   })();
