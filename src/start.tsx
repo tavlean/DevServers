@@ -373,7 +373,6 @@ function RecentRow({
 
 interface PickerProps {
   autoOpen: boolean;
-  confirmMulti: boolean;
   // Finder's current selection, resolved to project roots. Empty unless
   // Finder was the app behind the Raycast window when this command opened.
   finderTargets: Target[];
@@ -391,11 +390,9 @@ interface PickerProps {
 function FinderSelectionRow({
   targets,
   autoOpen,
-  confirmMulti,
 }: {
   targets: Target[];
   autoOpen: boolean;
-  confirmMulti: boolean;
 }) {
   const names = targets.map((t) => t.projectName);
   const multiple = targets.length > 1;
@@ -406,11 +403,17 @@ function FinderSelectionRow({
   async function start() {
     await launchSpawn(
       targets.map((t) => ({ cwd: t.cwd, name: t.projectName })),
-      // The names are on the row, so the user has already seen what this
-      // starts. The confirm preference is still honored: it is the setting
-      // for multi-starts, and a second look at a list of folders about to
-      // spawn is what its owner asked for.
-      { autoOpen, confirmMulti },
+      // No multi-start confirm, like every other row in this picker. That
+      // preference guards the invisible path: from root search a hotkey
+      // spawns a Finder selection having shown nothing, and the dialog is
+      // the first sight of what is starting. Here the row was that sight,
+      // and it named these exact folders, so a confirm could only print the
+      // same list again. It is also bound to this snapshot rather than to
+      // whatever Finder holds at ↵, so the row cannot misstate what spawns.
+      //
+      // The already-running confirm is untouched and still fires: whether
+      // one of these is up is precisely what the row could not know.
+      { autoOpen, confirmMulti: false },
     );
   }
 
@@ -450,7 +453,6 @@ function FinderSelectionRow({
 // picks.
 function PickerView({
   autoOpen,
-  confirmMulti,
   finderTargets,
   terminalApp,
   editorApp,
@@ -546,11 +548,7 @@ function PickerView({
     >
       {finderTargets.length > 0 && (
         <List.Section title="Selected in Finder">
-          <FinderSelectionRow
-            targets={finderTargets}
-            autoOpen={autoOpen}
-            confirmMulti={confirmMulti}
-          />
+          <FinderSelectionRow targets={finderTargets} autoOpen={autoOpen} />
         </List.Section>
       )}
       <List.Section title="Browse">
@@ -674,7 +672,6 @@ export default function Command(
     return (
       <PickerView
         autoOpen={autoOpen}
-        confirmMulti={confirmMulti}
         finderTargets={finderTargets}
         terminalApp={terminalApp}
         editorApp={editorApp}
