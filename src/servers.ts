@@ -162,6 +162,32 @@ async function listCwds(pids: number[]): Promise<Map<number, string>> {
   return out;
 }
 
+// Parents of a handful of known PIDs. Same field syntax as listProcesses, but
+// -p asks only about the pids we care about instead of walking the whole
+// table; a pid that died since we learned of it is simply absent from the
+// output (ps exits non-zero when none of them are left).
+async function listParents(pids: number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  if (pids.length === 0) return out;
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("ps", [
+      "-o",
+      "pid=,ppid=",
+      "-p",
+      pids.join(","),
+    ]));
+  } catch (err) {
+    stdout = stdoutOrThrow(err);
+  }
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s*$/);
+    if (!match) continue;
+    out.set(parseInt(match[1], 10), parseInt(match[2], 10));
+  }
+  return out;
+}
+
 interface GitInfo {
   // Absolute path to the shared .git directory. Same value for every
   // worktree of the same repo, so it's a stable grouping key.
@@ -1046,6 +1072,16 @@ export async function killServer(pid: number): Promise<void> {
 // Call only with the project down. If anything is still serving this cwd on a
 // deliberate port, we touch nothing: that server owns helpers we have no way
 // of telling apart from these.
+//
+// And only orphans die. Sharing a cwd is not enough to make a process ours:
+// a standalone `vitest --ui` or a throwaway `http.createServer(0)` script,
+// started from the project folder and still parented by the shell that ran
+// it, is somebody's own tool, and killing it on the way to a spawn the user
+// asked for would be indefensible. That is the same judgment
+// suppressHelperRows makes about what it declines to hide. It costs us
+// nothing: every helper we exist to remove is by definition an orphan, since
+// unix reparents to init the instant a parent exits, including the parent we
+// killed a few milliseconds ago.
 export async function reapProjectHelpers(cwd: string): Promise<void> {
   try {
     const listeners = await listListeners();
@@ -1053,9 +1089,19 @@ export async function reapProjectHelpers(cwd: string): Promise<void> {
     const cwdByPid = await listCwds([...new Set(listeners.map((l) => l.pid))]);
     const mine = listeners.filter((l) => cwdByPid.get(l.pid) === cwd);
     if (mine.some((l) => l.port < EPHEMERAL_PORT_MIN)) return;
-    const pids = [...new Set(mine.map((l) => l.pid))];
-    // Nothing to signal, so skip the SIGTERM grace wait below. This is the
-    // common case: most projects have no helpers, and every spawn reaps first.
+    const candidates = [...new Set(mine.map((l) => l.pid))];
+    // Nothing to signal, so skip the ps call and the SIGTERM grace wait below.
+    // This is the common case: most projects have no helpers, and every spawn
+    // reaps first.
+    if (candidates.length === 0) return;
+    // Keep only what nothing is parenting. A pid that has gone away since the
+    // lsof has no ppid here and drops out with them, which is right: there is
+    // nothing left to signal.
+    const ppidByPid = await listParents(candidates);
+    const pids = candidates.filter((pid) => {
+      const ppid = ppidByPid.get(pid);
+      return ppid !== undefined && ppid <= 1;
+    });
     if (pids.length === 0) return;
     // Ask politely first: a helper that still has its wits about it should
     // get to close its sockets.
