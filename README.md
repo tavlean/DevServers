@@ -22,9 +22,10 @@ See every dev server running on your Mac, grouped by project. Kill, restart, ope
 ## Start Dev Server
 
 - Works from a Finder selection (multi-folder too), a picker of recently seen projects, or the native folder dialog
+- Select folders in Finder and open this command and they start straight away. Reach the picker from the dashboard instead (`⌘N`) and the same selection waits at the top as **Selected in Finder**, naming what it would start, so nothing spawns until you press `↵`
 - Finds the right script automatically: `dev`, `start`, `develop`, then monorepo names like `dev:web`
 - Shopify support: themes start with `shopify theme dev` (with automatic port fallback when 9292 is taken), app roots with `shopify app dev`, and Hydrogen storefronts through their normal scripts
-- If a server doesn't bind a port within 15 seconds, the toast escalates with a **View Startup Log** action so you can see what went wrong. A restart that doesn't come back does the same
+- If a server doesn't bind a port within 15 seconds, its row turns red and names the cause where it can, keeping **View Startup Log** and the other remedies on the row until you dismiss it. A restart that doesn't come back does the same
 - First-run note for Shopify: run `shopify theme dev --store <your-store>` once in a terminal so the CLI remembers your store; a background spawn can't answer its login prompt
 - Note for portless users: dev scripts wrapped in `portless run` need the portless proxy already running, since a background spawn has no TTY for its sudo prompt. Run `portless service install` once and the proxy starts at boot, so starts keep working after a reboot
 
