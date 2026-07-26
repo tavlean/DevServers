@@ -1045,8 +1045,11 @@ export default function Command(
     return async (): Promise<DevServer[]> => {
       const next = await fetchServers();
       if (last && sameServers(next, last)) return last;
-      // Written only on change: the snapshot's content would be identical
-      // otherwise, and this runs on every poll for the whole session.
+      // Written only on change, and "change" is sameServers' definition:
+      // pid, port, branch. A field it ignores (a portless alias attaching to
+      // a running server) also skips the write, so the menu bar's first paint
+      // can be that little bit staler; its own fetch corrects it in the same
+      // open, which is the eventual consistency those fields already accept.
       writeSnapshot(next);
       last = next;
       return next;
