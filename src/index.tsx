@@ -717,12 +717,11 @@ async function confirmRestartBatch(
     target: { name: string };
     existing: DevServer;
   }>,
-  totalCount: number,
+  total: number,
 ): Promise<boolean> {
   if (runningTargets.length === 0) return true;
   const names = runningTargets.map((r) => r.target.name);
   const running = runningTargets.length;
-  const total = totalCount;
   const remainingCount = total - running;
 
   if (total === 1) {
@@ -774,16 +773,19 @@ type SpawnPhase =
 // user's time on a question we can already answer.
 type SpawnFailure = "port-conflict" | "portless-proxy-down";
 
-// How long a spawned server gets to bind a port before we call it failed.
-// Shared so the pending row's progress ring runs out at the same instant the
-// watchdog fires, rather than drifting from a second copy of the number.
+// How long a spawned server gets to bind a port before the watchdog calls it
+// failed. Also spelled into the undiagnosed failed-row title, so the number
+// the user reads always matches the wait they actually got.
 const SPAWN_TIMEOUT_MS = 15000;
 
-// A toast gives us one short line. The title is the only part that reliably
-// survives, so the cause goes there and nothing that matters goes in the
-// message. Both failure paths now report on a row rather than a toast, so the
-// title lands as the row's subtitle and the fix, when we can name one, is a
-// real action on that row.
+// A restart polls on this staggered backoff instead of the watchdog; the sum
+// is the window its failed-row title quotes.
+const RESTART_POLL_DELAYS = [1000, 2000, 3000, 4000];
+const RESTART_WINDOW_S =
+  RESTART_POLL_DELAYS.reduce((total, ms) => total + ms, 0) / 1000;
+
+// The failure's title becomes the failed row's title, and a nameable fix
+// becomes its Copy Fix Command action.
 const SPAWN_FAILURE: Record<SpawnFailure, { title: string; fix?: string }> = {
   "port-conflict": { title: "Port already in use" },
   "portless-proxy-down": {
@@ -791,6 +793,18 @@ const SPAWN_FAILURE: Record<SpawnFailure, { title: string; fix?: string }> = {
     fix: "portless service install",
   },
 };
+
+// Size of the (append-mode) spawn log before an attempt writes to it. Taken
+// right before every spawn so the watchdog and the log view can scope
+// themselves to that attempt's bytes alone.
+function spawnLogOffset(cwd: string): number {
+  try {
+    return fs.statSync(spawnLogPath(cwd)).size;
+  } catch {
+    // No log yet; the spawn writes from byte 0.
+    return 0;
+  }
+}
 
 // Whether the chunk of the startup log written by this spawn (from byte
 // `logStart`) shows the server dying for one of those reasons. Scoped to the
@@ -1060,7 +1074,7 @@ function PendingItem({
     </ActionPanel.Section>
   );
 
-  if (entry.status === "starting") {
+  if (spinning) {
     return (
       <List.Item
         id={id}
@@ -1105,8 +1119,8 @@ function PendingItem({
       title={
         failure?.title ??
         (entry.kind === "restart"
-          ? "Didn't come back after 10s"
-          : "Didn't start after 15s")
+          ? `Didn't come back after ${RESTART_WINDOW_S}s`
+          : `Didn't start after ${SPAWN_TIMEOUT_MS / 1000}s`)
       }
       accessories={[{ tag: { value: "Failed", color: Color.Red } }]}
       actions={
@@ -1183,11 +1197,16 @@ export default function Command(
   // when pid+port content matches lets React's Object.is bail out of
   // the re-render entirely.
   const fetchStableServers = useMemo(() => {
-    let last: DevServer[] = [];
+    // null until the first poll, so that poll always writes the snapshot:
+    // the cache may hold a stale one from a previous session, and an empty
+    // first result must replace it just as surely as a full one.
+    let last: DevServer[] | null = null;
     return async (): Promise<DevServer[]> => {
       const next = await fetchServers();
+      if (last && sameServers(next, last)) return last;
+      // Written only on change: the snapshot's content would be identical
+      // otherwise, and this runs on every poll for the whole session.
       writeSnapshot(next);
-      if (sameServers(next, last)) return last;
       last = next;
       return next;
     };
@@ -1394,14 +1413,7 @@ export default function Command(
       //    see step 6.
       const spawned = await Promise.all(
         spawn.targets.map(async (t) => {
-          // Size of the (append-mode) spawn log before this attempt writes
-          // to it, so the watchdog can inspect only this attempt's output.
-          let logStart = 0;
-          try {
-            logStart = fs.statSync(spawnLogPath(t.cwd)).size;
-          } catch {
-            // No log yet; the spawn writes from byte 0.
-          }
+          const logStart = spawnLogOffset(t.cwd);
           try {
             await startDevServer(t.cwd);
             await recordSeen({
@@ -1697,12 +1709,7 @@ export default function Command(
     // Same log baseline the spawn flow takes: a restart respawns through
     // startDevServer, so it fails for the same nameable reasons and deserves
     // the same diagnosis instead of a bare file path.
-    let logStart = 0;
-    try {
-      logStart = fs.statSync(spawnLogPath(server.cwd)).size;
-    } catch {
-      // No log yet; the respawn writes from byte 0.
-    }
+    const logStart = spawnLogOffset(server.cwd);
     // The row goes up before the kill, so the project never blinks out of the
     // list: the old row goes, this one is already standing in its place.
     // ignorePids is every server that held this cwd a moment ago, so the row
@@ -1731,11 +1738,11 @@ export default function Command(
         title: "Restarting…",
         message: server.projectName,
       });
-      // Poll at staggered intervals up to ~10s. Bail early as soon as the
-      // server count for this project rises above baseline (new port bound).
-      const delays = [1000, 2000, 3000, 4000];
+      // Poll at staggered intervals up to RESTART_WINDOW_S. Bail early as
+      // soon as the server count for this project rises above baseline (new
+      // port bound).
       let restored = false;
-      for (const delay of delays) {
+      for (const delay of RESTART_POLL_DELAYS) {
         await new Promise((r) => setTimeout(r, delay));
         await revalidate();
         const current = serversRef.current.filter(

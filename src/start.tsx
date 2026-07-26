@@ -15,9 +15,6 @@ import {
   getSelectedFinderItems,
   launchCommand,
 } from "@raycast/api";
-// Note: useNavigation and Form are no longer needed. The Choose
-// Folder flow now opens the native macOS picker directly instead of
-// pushing a Raycast Form view.
 import {
   showFailureToast,
   useCachedPromise,
@@ -238,16 +235,15 @@ function RecentRow({
     await onRemove(recent.cwd);
   }
 
-  const tool = framework;
   const accessories: List.Item.Accessory[] = [
     {
       text: formatLastSeen(recent.lastSeen),
       tooltip: `Last seen ${new Date(recent.lastSeen).toLocaleString()}`,
     },
   ];
-  if (tool) {
+  if (framework) {
     accessories.push({
-      tag: { value: toolLabel(tool), color: toolColor(tool) },
+      tag: { value: toolLabel(framework), color: toolColor(framework) },
     });
   }
 
@@ -262,7 +258,7 @@ function RecentRow({
     ? { source: recent.favicon, fallback: Icon.Folder }
     : {
         source: Icon.Folder,
-        tintColor: tool ? toolColor(tool) : Color.SecondaryText,
+        tintColor: framework ? toolColor(framework) : Color.SecondaryText,
       };
 
   return (
