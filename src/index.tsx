@@ -164,9 +164,12 @@ function SpawnLogView({
     async (p: string, from: number): Promise<string> => {
       try {
         const buf = await fs.promises.readFile(p);
-        // A shorter file than the offset means the log was cleared out from
-        // under us; showing everything beats showing nothing.
-        return from > 0 && from < buf.length
+        // Only a file shorter than the offset falls back to the whole log:
+        // it means the log was cleared out from under us, and showing
+        // everything beats showing nothing. A file exactly as long as the
+        // offset is the attempt that wrote nothing at all, so the empty
+        // slice is the honest answer and the view says so.
+        return from > 0 && from <= buf.length
           ? buf.subarray(from).toString("utf8")
           : buf.toString("utf8");
       } catch {
