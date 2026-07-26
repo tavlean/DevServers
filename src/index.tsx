@@ -1427,6 +1427,9 @@ export default function Command(
       // The rows carry the failure now, and the success path has its own
       // toast, so nothing is left for this one to say.
       toastRef.current?.hide().catch(() => {});
+      // The pre-spawn kill may have taken servers down that never came back,
+      // so the count changed on a path that used to poke only on success.
+      pokeMenuBar();
       setSpawnState({ phase: "done" });
     }, SPAWN_TIMEOUT_MS);
     return () => clearTimeout(timer);
@@ -1616,11 +1619,15 @@ export default function Command(
             reason,
           });
         });
+        // The old server is dead and nothing replaced it: the menu bar's
+        // count changed on a failure just as surely as on a success.
+        pokeMenuBar();
       }
     } catch (err) {
       // The respawn never got off the ground, so there is nothing for a row
       // to wait on. Drop it and let the error speak for itself.
       dismissPending(server.cwd);
+      pokeMenuBar();
       await showFailureToast(err, {
         title: `Failed to restart ${server.projectName}`,
       });
