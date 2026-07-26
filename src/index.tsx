@@ -927,6 +927,10 @@ function PendingItem({
         // what is happening instead of repeating it. Server rows title on
         // their host and port; a row with no port yet has its state to give.
         title={entry.kind === "restart" ? "Restarting…" : "Starting…"}
+        // The project name lives in the section header, which Raycast's search
+        // doesn't index, so without this typing a project's name filters its
+        // own pending row out from under the user.
+        keywords={[entry.name, cwd]}
         actions={
           <ActionPanel>
             {/* Tailing the log of a server that is still booting is the one
@@ -966,6 +970,9 @@ function PendingItem({
           ? `Didn't come back after ${RESTART_WINDOW_S}s`
           : `Didn't start after ${SPAWN_TIMEOUT_MS / 1000}s`)
       }
+      // As above: the name is only in the section header, and a filtered-out
+      // failed row takes its remedies with it.
+      keywords={[entry.name, cwd]}
       accessories={[{ tag: { value: "Failed", color: Color.Red } }]}
       actions={
         <ActionPanel>
