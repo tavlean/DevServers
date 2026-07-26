@@ -1599,6 +1599,11 @@ export default function Command(
       if (restored) {
         toast.style = Toast.Style.Success;
         toast.title = "Restarted";
+        // Same exit the start toast makes: confirmation is a moment, not a
+        // fixture, and a toast never dismisses itself.
+        setTimeout(() => {
+          toast.hide().catch(() => {});
+        }, 2500);
         // Selection has already followed the row across in render, and the
         // cleanup effect drops the entry. Nothing to do here but the toast:
         // the replacement is the newest server for this cwd, so the sort puts
