@@ -743,10 +743,10 @@ function openAutomatically(url: string): void {
 // arrival:
 //
 //   1. A deliberate port. An OS-assigned one is plumbing, the same call
-//      suppressHelperRows and `settling` make, and while a start is in flight
-//      `settling` hides those rows outright. A workerd helper resolving the
-//      row would therefore retire the spinner in favour of a row the list is
-//      not even drawing, and the failure would never be diagnosed.
+//      suppressHelperRows makes, and while a start is in flight its mid-start
+//      rule keeps those rows out of the fetch entirely. A workerd helper
+//      resolving the row would therefore retire the spinner in favour of a row
+//      the list is not even drawing, and the failure would never be diagnosed.
 //   2. A pid the row was not already looking at, per `ignorePids`.
 function resolvingServer(
   cwd: string,
@@ -1032,6 +1032,27 @@ export default function Command(
   const launchContextRef = useRef(props.launchContext);
   const spawnRequest = launchContextRef.current?.spawn;
 
+  // Starts in flight, keyed by cwd. Deliberately its own state slice rather
+  // than synthetic entries in the useCachedPromise data: every kill and
+  // restart handler runs an optimisticUpdate filter over that array typed as
+  // DevServer[], and a fake entry would flow through all of them.
+  //
+  // Declared ahead of the fetch below because the fetch reads it: which
+  // projects are mid-start is exactly what lets fetchServers drop their helper
+  // rows.
+  const [pendingStarts, setPendingStarts] = useState<Map<string, PendingStart>>(
+    new Map(),
+  );
+  // Mirrored so async readers get the current map without taking it as a
+  // dependency: the watchdog has to know which rows are still standing when it
+  // fires, and it cannot take `pendingStarts` as a dependency without
+  // restarting its 15s timer every time a row changes. The fetch reads it for
+  // the same reason, which is what lets its identity stay stable across polls.
+  const pendingStartsRef = useRef(pendingStarts);
+  useEffect(() => {
+    pendingStartsRef.current = pendingStarts;
+  }, [pendingStarts]);
+
   // Dedupe `servers` references when content is unchanged. Without this,
   // every poll (every 1s while expecting servers) hands React a new array
   // identity, triggering downstream effects/memos to re-evaluate even
@@ -1046,7 +1067,17 @@ export default function Command(
     // first result must replace it just as surely as a full one.
     let last: DevServer[] | null = null;
     return async (): Promise<DevServer[]> => {
-      const next = await fetchServers();
+      // Which projects are mid-start, as of this poll. fetchServers wants it
+      // because a starting project's helpers are the one kind of plumbing it
+      // cannot recognise on its own (see suppressHelperRows, rule 4). Handing
+      // it to the fetch rather than filtering the result afterwards is what
+      // puts the same judgment in the snapshot the menu bar reads.
+      const settling = new Set(
+        [...pendingStartsRef.current]
+          .filter(([, entry]) => entry.status === "starting")
+          .map(([cwd]) => cwd),
+      );
+      const next = await fetchServers(settling);
       if (last && sameServers(next, last)) return last;
       // Written only on change, and "change" is sameServers' definition:
       // pid, port, branch. A field it ignores (a portless alias attaching to
@@ -1110,21 +1141,6 @@ export default function Command(
   useEffect(() => {
     selectedIdRef.current = selectedItemId;
   }, [selectedItemId]);
-
-  // Starts in flight, keyed by cwd. Deliberately its own state slice rather
-  // than synthetic entries in the useCachedPromise data: every kill and
-  // restart handler runs an optimisticUpdate filter over that array typed as
-  // DevServer[], and a fake entry would flow through all of them.
-  const [pendingStarts, setPendingStarts] = useState<Map<string, PendingStart>>(
-    new Map(),
-  );
-  // Mirrored for the same reason selection is: the watchdog has to know which
-  // rows are still standing when it fires, and it cannot take `pendingStarts`
-  // as a dependency without restarting its 15s timer every time a row changes.
-  const pendingStartsRef = useRef(pendingStarts);
-  useEffect(() => {
-    pendingStartsRef.current = pendingStarts;
-  }, [pendingStarts]);
 
   // Flipped once the persisted rows have been merged in. Until then the
   // write-through below holds its fire: the initial state is an empty map, and
@@ -1851,23 +1867,12 @@ export default function Command(
     return Array.from(seen).sort();
   }, [servers]);
 
-  // A project mid-start has a window where its helpers are listening and the
-  // dev server itself is not. suppressHelperRows can do nothing there: it
-  // recognises plumbing by a real server it can see, and there isn't one yet.
-  // The pending row is the missing evidence, so while one is up we refuse
-  // ephemeral-port rows for that cwd outright. Bounded by the row's own
-  // lifetime, so nothing stays hidden once the project settles.
-  const settling = new Set(
-    [...pendingStarts]
-      .filter(([, e]) => e.status === "starting")
-      .map(([c]) => c),
-  );
-  const listed = servers.filter(
-    (s) => !settling.has(s.cwd) || parseInt(s.port, 10) < EPHEMERAL_PORT_MIN,
-  );
-
+  // Mid-start helper rows are already gone: the fetch drops them, so `servers`
+  // never carries one and the snapshot the menu bar reads doesn't either.
   const visible =
-    toolFilter === "all" ? listed : listed.filter((s) => s.tool === toolFilter);
+    toolFilter === "all"
+      ? servers
+      : servers.filter((s) => s.tool === toolFilter);
 
   // Which pending starts still deserve a row. Derived every render, never
   // stored: an entry shows only while `resolvingServer` finds nothing for it.
@@ -1877,8 +1882,9 @@ export default function Command(
   // a frame with neither row, and selection would jump to a stranger.
   //
   // "The same array" holds because the predicate only ever resolves against a
-  // deliberate port, and `settling` above hides nothing on a deliberate port:
-  // the server that retires this row is always one `listed` is about to draw.
+  // deliberate port, and the fetch's mid-start rule drops nothing on a
+  // deliberate port: the server that retires this row is always one `servers`
+  // is carrying.
   const visiblePending = [...pendingStarts].filter(
     ([cwd, entry]) => !resolvingServer(cwd, entry, servers),
   );

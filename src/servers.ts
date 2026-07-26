@@ -514,7 +514,12 @@ interface PidMeta {
 }
 const pidMetaCache = new Map<number, PidMeta>();
 
-export async function fetchServers(): Promise<DevServer[]> {
+// `settlingCwds` names the projects the caller knows to be mid-start, and is
+// the evidence for suppressHelperRows' fourth rule (see there). Omit it, or
+// pass an empty set, and nothing changes.
+export async function fetchServers(
+  settlingCwds?: ReadonlySet<string>,
+): Promise<DevServer[]> {
   const [procs, listeners, aliasesByPort] = await Promise.all([
     listProcesses(),
     listListeners(),
@@ -609,12 +614,12 @@ export async function fetchServers(): Promise<DevServer[]> {
       startedAt: new Date(proc.lstart),
     });
   }
-  return suppressHelperRows(servers, procByPid);
+  return suppressHelperRows(servers, procByPid, settlingCwds);
 }
 
 // macOS hands out dynamic ports from this range when a process binds port 0.
 // Exported because the dashboard needs the same notion of "not a port anyone
-// chose" while a project is mid-restart (see the pending-row filtering).
+// chose" while a project is mid-restart (see resolvingServer there).
 export const EPHEMERAL_PORT_MIN = 49152;
 
 // Drop rows that are internal sockets of an already-listed server, on either
@@ -628,6 +633,7 @@ export const EPHEMERAL_PORT_MIN = 49152;
 //      plain "helper the dev server forked with port 0" case.
 //   2. Same project. Some other row on a deliberate port has this cwd.
 //   3. Orphaned. Its parent is init, so whatever launched it is dead.
+//   4. Mid-start. The caller says a start is in flight for this cwd.
 //
 // Rule 2 exists because rule 1 loses to reparenting. Miniflare's workerd is
 // launched by an intermediate process that then exits, so workerd is adopted
@@ -644,12 +650,22 @@ export const EPHEMERAL_PORT_MIN = 49152;
 // nothing, since orphaned workerd ignores SIGTERM. An ephemeral port plus a
 // dead parent is not a dev server anyone started.
 //
-// What survives all three is an ephemeral-port listener with a living parent
+// Rule 4 is the one we cannot see for ourselves. A project mid-start has a
+// window where its helpers are listening and the dev server itself is not, and
+// the three rules above all recognise plumbing by a real server they can find:
+// there isn't one yet. A pending start row is the missing evidence, so while
+// the caller says one is up we refuse ephemeral-port rows for that cwd
+// outright. It is bounded by that row's own lifetime, so nothing stays hidden
+// once the project settles, and a caller that knows nothing about starts in
+// flight passes nothing and gets the other three rules unchanged.
+//
+// What survives all four is an ephemeral-port listener with a living parent
 // that we are not showing: somebody's own tool, which we have no business
 // hiding.
 function suppressHelperRows(
   servers: DevServer[],
   procByPid: Map<number, RawProcess>,
+  settlingCwds?: ReadonlySet<string>,
 ): DevServer[] {
   const shownPids = new Set(servers.map((s) => s.pid));
   // Projects that already have a server on a port someone chose. An
@@ -663,6 +679,7 @@ function suppressHelperRows(
   return servers.filter((server) => {
     if (parseInt(server.port, 10) < EPHEMERAL_PORT_MIN) return true;
     if (anchoredCwds.has(server.cwd)) return false;
+    if (settlingCwds?.has(server.cwd)) return false;
     const self = procByPid.get(server.pid);
     if (self && self.ppid <= 1) return false;
     let cur = self;

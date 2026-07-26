@@ -12,6 +12,7 @@ import {
 import { useFrecencySorting, useLocalStorage } from "@raycast/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
+import { readPendingStarts } from "./pendingStore";
 import { RecentProject, STORAGE_KEY } from "./recents";
 import {
   byRecency,
@@ -171,7 +172,21 @@ export default function Command() {
   );
 
   const refresh = useCallback(async () => {
-    const next = await fetchServers();
+    // The dashboard's starts in flight, which is how this surface gets to make
+    // the same call it does about a mid-start project's helper rows: they are
+    // listening while the project's own server is not, and fetchServers cannot
+    // tell them apart from a real one without being told. Entries past their
+    // deadline are ignored, so a dashboard that was unloaded mid-start leaves
+    // behind an entry that hides rows for its own window and no longer.
+    const now = Date.now();
+    const settling = new Set(
+      [...(await readPendingStarts())]
+        .filter(
+          ([, entry]) => entry.status === "starting" && entry.deadline > now,
+        )
+        .map(([cwd]) => cwd),
+    );
+    const next = await fetchServers(settling);
     setServers(next);
     writeSnapshot(next);
     await updateCommandMetadata({ subtitle: metadataSubtitle(next.length) });
