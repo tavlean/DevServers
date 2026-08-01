@@ -7,6 +7,7 @@ import {
   getPreferenceValues,
   launchCommand,
   open,
+  showHUD,
   updateCommandMetadata,
 } from "@raycast/api";
 import { useFrecencySorting, useLocalStorage } from "@raycast/utils";
@@ -395,7 +396,15 @@ export default function Command() {
                     icon={tintedMenuIcon("kill", Color.Red)}
                     onAction={() => {
                       stayLoadedWhile(async () => {
-                        await killServer(server.pid);
+                        // The SIGKILL lands synchronously inside killServer;
+                        // only the wait-for-exit is deferred. The HUD goes up
+                        // before that wait so the confirmation beats the
+                        // click-teardown grace window — it is the only
+                        // feedback a menu kill has, and it must not queue
+                        // behind half a second of process-exit polling.
+                        const killed = killServer(server.pid);
+                        await showHUD(`Killed ${server.projectName}`);
+                        await killed;
                         // Same cleanup the dashboard does. Killing from here
                         // would otherwise strand the project's helpers, which
                         // hold their ports until the machine restarts. killServer
@@ -455,9 +464,17 @@ export default function Command() {
                     stayLoadedWhile(async () => {
                       // allSettled: a server can die between menu open and click,
                       // and one stale pid must not stop the rest of the project.
-                      await Promise.allSettled(
+                      // Signals land synchronously; the HUD goes up before the
+                      // exit waits, same reasoning as the per-server Kill.
+                      const killed = Promise.allSettled(
                         projectServers.map((server) => killServer(server.pid)),
                       );
+                      await showHUD(
+                        projectServers.length === 2
+                          ? `Killed both ${projectServers[0].projectName} servers`
+                          : `Killed all ${projectServers.length} ${projectServers[0].projectName} servers`,
+                      );
+                      await killed;
                       // Reap once per folder, after every server in it is down:
                       // killing a server strands its helpers, and a reap taken
                       // while any real server for the cwd is still listening
