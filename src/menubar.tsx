@@ -396,21 +396,25 @@ export default function Command() {
                     icon={tintedMenuIcon("kill", Color.Red)}
                     onAction={() => {
                       stayLoadedWhile(async () => {
-                        // killServer returns once the process is actually
-                        // gone (it polls the pid after the SIGKILL), so the
-                        // HUD is a statement of fact, not a prediction — the
-                        // user asked for the confirmation to mean dead. It
-                        // still goes up before the reap and the refresh:
-                        // those are seconds of lsof sweeps, and the
-                        // confirmation must not wait on bookkeeping.
-                        await killServer(server.pid);
+                        // Order is load-bearing, learned twice over. The
+                        // SIGKILL lands synchronously inside killServer, and
+                        // the HUD's IPC must be dispatched in this same tick:
+                        // a clicked menu bar command survives only while it
+                        // has Raycast API work in flight, and a version that
+                        // put killServer's exit-wait (pure timers) first died
+                        // right there — no HUD, no refresh, count frozen
+                        // until the next interval. The HUD is still truthful
+                        // at this moment: a SIGKILL that the syscall accepted
+                        // cannot be refused, only briefly outlived.
+                        const killed = killServer(server.pid);
                         await showHUD(`Killed ${server.projectName}`);
+                        await killed;
                         // Refresh before the reap so the menu bar count drops
-                        // as soon as the death is visible, not after the
-                        // helper sweep. The reap is indifferent to order —
-                        // killServer already waited, so its first look finds
-                        // the port free either way — and the second refresh
-                        // picks up whatever the reap freed.
+                        // as soon as the death is visible, not after seconds
+                        // of helper-sweep lsof. The reap is indifferent to
+                        // order — killServer waited for the exit, so its
+                        // first look finds the port free either way — and
+                        // the second refresh picks up what the reap freed.
                         await refresh();
                         // Same cleanup the dashboard does. Killing from here
                         // would otherwise strand the project's helpers, which
@@ -469,11 +473,12 @@ export default function Command() {
                     stayLoadedWhile(async () => {
                       // allSettled: a server can die between menu open and click,
                       // and one stale pid must not stop the rest of the project.
-                      // Awaited before the HUD so the confirmation means every
-                      // process is actually gone, then refresh-before-reap so
-                      // the count drops promptly — same order as the
-                      // per-server Kill, for the same reasons.
-                      await Promise.allSettled(
+                      // Every SIGKILL lands synchronously in this tick; the HUD
+                      // is dispatched in the same tick because the first await
+                      // must be a Raycast API call — see the per-server Kill
+                      // for the ordering lesson — and refresh runs before the
+                      // reap so the count drops promptly.
+                      const killed = Promise.allSettled(
                         projectServers.map((server) => killServer(server.pid)),
                       );
                       await showHUD(
@@ -481,6 +486,7 @@ export default function Command() {
                           ? `Killed both ${projectServers[0].projectName} servers`
                           : `Killed all ${projectServers.length} ${projectServers[0].projectName} servers`,
                       );
+                      await killed;
                       await refresh();
                       // Reap once per folder, after every server in it is down:
                       // killing a server strands its helpers, and a reap taken
