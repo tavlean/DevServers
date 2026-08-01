@@ -23,6 +23,7 @@ import {
   reapProjectHelpersWhenDown,
   restartServer,
 } from "./servers";
+import { svgFaviconTint } from "./favicons";
 import { readSnapshot, writeSnapshot } from "./snapshot";
 import { toolColor } from "./tool-display";
 import { DevServer } from "./types";
@@ -55,9 +56,15 @@ function serverLocator(server: DevServer): string {
 // shows), then the port/domain in parens, then the branch. It's a submenu,
 // which has no subtitle, so everything sits on one line at one weight — the
 // parens and " · " separator stand in for the dimming we can't apply.
-function serverTitle(server: DevServer): string {
+//
+// The branch appears only when it disambiguates: the caller passes showBranch
+// per project, true when that project's rows span more than one branch (i.e.
+// worktrees running side by side — main included then, it's doing real work).
+// A project whose servers all sit on one branch repeats nothing but noise,
+// which in practice meant "· main" on every row.
+function serverTitle(server: DevServer, showBranch: boolean): string {
   const head = `${server.projectName} (${serverLocator(server)})`;
-  return server.branch ? `${head} · ${server.branch}` : head;
+  return showBranch && server.branch ? `${head} · ${server.branch}` : head;
 }
 
 function menuIconSource(name: string): Image.Source {
@@ -101,17 +108,20 @@ function menuBarFavicon(recent: RecentProject): string | undefined {
 // Icon for a running server row. Reuses the favicon the dashboard already
 // resolved and cached onto the project's recents entry — the menu bar never
 // fetches favicons itself, to stay cheap on its background interval. Projects
-// with no usable cached favicon (never opened in the dashboard, or only an SVG
-// favicon which the menu bar can't render in color) fall back to the
-// framework-tinted server glyph.
+// with no renderable favicon fall back to the server glyph, tinted with the
+// project's own brand color when one could be read out of its SVG favicon
+// (tintByCwd), and only then with the framework badge color — the badge tint
+// painted every SvelteKit project the same orange, which defeats scanning.
 function serverIcon(
   server: DevServer,
   faviconByCwd: Map<string, string>,
+  tintByCwd: Map<string, string>,
 ): Image.ImageLike {
-  const favicon = faviconByCwd.get(canonicalCwd(server.cwd));
+  const cwd = canonicalCwd(server.cwd);
+  const favicon = faviconByCwd.get(cwd);
   return favicon
     ? { source: favicon, fallback: menuIconSource("server") }
-    : tintedMenuIcon("server", toolColor(server.tool));
+    : tintedMenuIcon("server", tintByCwd.get(cwd) ?? toolColor(server.tool));
 }
 
 // Newest first, within a project and across them, matching the dashboard.
@@ -240,6 +250,20 @@ export default function Command() {
     return map;
   }, [recents]);
 
+  // Brand tints for projects the menu bar can't show a favicon image for:
+  // their cached favicon is SVG-only, but the SVG's dominant color still
+  // carries the project's identity onto the fallback glyph. Keyed by canonical
+  // cwd like faviconByCwd; a project in neither map uses the framework tint.
+  const tintByCwd = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const recent of recents) {
+      if (menuBarFavicon(recent) || !recent.favicon) continue;
+      const tint = svgFaviconTint(recent.favicon);
+      if (tint) map.set(canonicalCwd(recent.cwd), tint);
+    }
+    return map;
+  }, [recents]);
+
   const startableRecents = useMemo(
     () =>
       recents
@@ -264,6 +288,21 @@ export default function Command() {
     },
   );
 
+  // The six rows the Start section will actually render; the branch-subtitle
+  // rule below judges ambiguity against these, not the full recents list — a
+  // twin that fell off the end of the list can't confuse anyone.
+  const visibleRecents = useMemo(
+    () => sortedRecents.slice(0, 6),
+    [sortedRecents],
+  );
+  const duplicateRecentNames = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const r of visibleRecents) {
+      counts.set(r.projectName, (counts.get(r.projectName) ?? 0) + 1);
+    }
+    return new Set([...counts].filter(([, n]) => n > 1).map(([name]) => name));
+  }, [visibleRecents]);
+
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
   const editorApp = prefs.editorApp;
   const title =
@@ -281,143 +320,162 @@ export default function Command() {
       {servers.length === 0 ? (
         <MenuBarExtra.Item title="No dev servers running" />
       ) : (
-        groupByProject(servers).map((projectServers) => (
+        groupByProject(servers).map((projectServers) => {
+          // Branch tags only when they tell rows apart: a project whose
+          // running servers span more than one branch is worktrees side by
+          // side, and every row gets its branch (main included). One branch
+          // across the project — the overwhelmingly common case — shows none.
+          const branchesDiffer =
+            new Set(projectServers.map((s) => s.branch ?? "")).size > 1;
           // No section title: the project name now leads each row (serverTitle).
           // The title-less section still renders a divider between projects and
           // hosts the per-project "Kill All" item.
-          <MenuBarExtra.Section key={projectServers[0].projectKey}>
-            {projectServers.map((server) => (
-              <MenuBarExtra.Submenu
-                key={`${server.pid}:${server.port}`}
-                title={serverTitle(server)}
-                icon={serverIcon(server, faviconByCwd)}
-              >
-                <MenuBarExtra.Item
-                  title="Open in Browser"
-                  icon={menuIcon("open-browser")}
-                  onAction={() => {
-                    void open(server.url);
-                  }}
-                />
-                {server.customUrls && server.customUrls.length > 0 ? (
+          return (
+            <MenuBarExtra.Section key={projectServers[0].projectKey}>
+              {projectServers.map((server) => (
+                <MenuBarExtra.Submenu
+                  key={`${server.pid}:${server.port}`}
+                  title={serverTitle(server, branchesDiffer)}
+                  icon={serverIcon(server, faviconByCwd, tintByCwd)}
+                >
                   <MenuBarExtra.Item
-                    title="Open Localhost URL"
-                    icon={menuIcon("local-link")}
+                    title="Open in Browser"
+                    icon={menuIcon("open-browser")}
                     onAction={() => {
-                      void open(server.localUrl);
+                      void open(server.url);
                     }}
                   />
-                ) : null}
-                <MenuBarExtra.Separator />
+                  {server.customUrls && server.customUrls.length > 0 ? (
+                    <MenuBarExtra.Item
+                      title="Open Localhost URL"
+                      icon={menuIcon("local-link")}
+                      onAction={() => {
+                        void open(server.localUrl);
+                      }}
+                    />
+                  ) : null}
+                  <MenuBarExtra.Separator />
+                  <MenuBarExtra.Item
+                    title="Restart"
+                    icon={menuIcon("restart")}
+                    onAction={() => {
+                      stayLoadedWhile(async () => {
+                        await restartServer(server);
+                        await refresh();
+                      });
+                    }}
+                  />
+                  <MenuBarExtra.Item
+                    title="Kill"
+                    icon={tintedMenuIcon("kill", Color.Red)}
+                    onAction={() => {
+                      stayLoadedWhile(async () => {
+                        await killServer(server.pid);
+                        // Same cleanup the dashboard does. Killing from here
+                        // would otherwise strand the project's helpers, which
+                        // hold their ports until the machine restarts. killServer
+                        // already waited for the process to exit, so the reap's
+                        // first look finds the port free and it returns at once.
+                        await reapProjectHelpersWhenDown([server.cwd]);
+                        await refresh();
+                      });
+                    }}
+                  />
+                  <MenuBarExtra.Separator />
+                  <MenuBarExtra.Item
+                    title="Copy URL"
+                    icon={menuIcon("copy-url")}
+                    onAction={() => {
+                      void Clipboard.copy(server.url);
+                    }}
+                  />
+                  <MenuBarExtra.Item
+                    title="Copy Port"
+                    icon={menuIcon("copy-port")}
+                    onAction={() => {
+                      void Clipboard.copy(server.port);
+                    }}
+                  />
+                  {editorApp ? (
+                    <MenuBarExtra.Item
+                      title="Open in Editor"
+                      icon={menuIcon("editor")}
+                      onAction={() => {
+                        void open(server.cwd, editorApp);
+                      }}
+                    />
+                  ) : null}
+                  <MenuBarExtra.Item
+                    title="Open in Terminal"
+                    icon={menuIcon("terminal")}
+                    onAction={() => {
+                      void open(server.cwd, terminalApp);
+                    }}
+                  />
+                </MenuBarExtra.Submenu>
+              ))}
+              {projectServers.length >= 2 ? (
+                // No confirmAlert in the menu bar context, so the guardrails are
+                // the label carrying the count, bottom placement, and hiding the
+                // item entirely for single-server projects (where the per-server
+                // Kill already covers it).
                 <MenuBarExtra.Item
-                  title="Restart"
-                  icon={menuIcon("restart")}
-                  onAction={() => {
-                    stayLoadedWhile(async () => {
-                      await restartServer(server);
-                      await refresh();
-                    });
-                  }}
-                />
-                <MenuBarExtra.Item
-                  title="Kill"
+                  title={
+                    projectServers.length === 2
+                      ? "Kill Both Servers"
+                      : `Kill All ${projectServers.length} Servers`
+                  }
                   icon={tintedMenuIcon("kill", Color.Red)}
                   onAction={() => {
                     stayLoadedWhile(async () => {
-                      await killServer(server.pid);
-                      // Same cleanup the dashboard does. Killing from here
-                      // would otherwise strand the project's helpers, which
-                      // hold their ports until the machine restarts. killServer
-                      // already waited for the process to exit, so the reap's
-                      // first look finds the port free and it returns at once.
-                      await reapProjectHelpersWhenDown([server.cwd]);
+                      // allSettled: a server can die between menu open and click,
+                      // and one stale pid must not stop the rest of the project.
+                      await Promise.allSettled(
+                        projectServers.map((server) => killServer(server.pid)),
+                      );
+                      // Reap once per folder, after every server in it is down:
+                      // killing a server strands its helpers, and a reap taken
+                      // while any real server for the cwd is still listening
+                      // backs out rather than touch that server's plumbing.
+                      await reapProjectHelpersWhenDown(
+                        projectServers.map((s) => s.cwd),
+                      );
                       await refresh();
                     });
                   }}
                 />
-                <MenuBarExtra.Separator />
-                <MenuBarExtra.Item
-                  title="Copy URL"
-                  icon={menuIcon("copy-url")}
-                  onAction={() => {
-                    void Clipboard.copy(server.url);
-                  }}
-                />
-                <MenuBarExtra.Item
-                  title="Copy Port"
-                  icon={menuIcon("copy-port")}
-                  onAction={() => {
-                    void Clipboard.copy(server.port);
-                  }}
-                />
-                {editorApp ? (
-                  <MenuBarExtra.Item
-                    title="Open in Editor"
-                    icon={menuIcon("editor")}
-                    onAction={() => {
-                      void open(server.cwd, editorApp);
-                    }}
-                  />
-                ) : null}
-                <MenuBarExtra.Item
-                  title="Open in Terminal"
-                  icon={menuIcon("terminal")}
-                  onAction={() => {
-                    void open(server.cwd, terminalApp);
-                  }}
-                />
-              </MenuBarExtra.Submenu>
-            ))}
-            {projectServers.length >= 2 ? (
-              // No confirmAlert in the menu bar context, so the guardrails are
-              // the label carrying the count, bottom placement, and hiding the
-              // item entirely for single-server projects (where the per-server
-              // Kill already covers it).
-              <MenuBarExtra.Item
-                title={
-                  projectServers.length === 2
-                    ? "Kill Both Servers"
-                    : `Kill All ${projectServers.length} Servers`
-                }
-                icon={tintedMenuIcon("kill", Color.Red)}
-                onAction={() => {
-                  stayLoadedWhile(async () => {
-                    // allSettled: a server can die between menu open and click,
-                    // and one stale pid must not stop the rest of the project.
-                    await Promise.allSettled(
-                      projectServers.map((server) => killServer(server.pid)),
-                    );
-                    // Reap once per folder, after every server in it is down:
-                    // killing a server strands its helpers, and a reap taken
-                    // while any real server for the cwd is still listening
-                    // backs out rather than touch that server's plumbing.
-                    await reapProjectHelpersWhenDown(
-                      projectServers.map((s) => s.cwd),
-                    );
-                    await refresh();
-                  });
-                }}
-              />
-            ) : null}
-          </MenuBarExtra.Section>
-        ))
+              ) : null}
+            </MenuBarExtra.Section>
+          );
+        })
       )}
 
-      {sortedRecents.length > 0 ? (
+      {visibleRecents.length > 0 ? (
         // Section titles render even over zero children, so an empty recents
         // list (or one fully hidden by the running set) must drop the whole
         // section rather than strand a bare "Start" header.
         <MenuBarExtra.Section title="Start">
-          {sortedRecents.slice(0, 6).map((recent) => (
+          {visibleRecents.map((recent) => (
             <MenuBarExtra.Item
               key={recent.cwd}
               title={recent.projectName}
-              subtitle={recent.branch}
+              // Branch only when the name alone is ambiguous — two visible
+              // entries sharing a project name are worktrees of it, and the
+              // branch is what tells them apart. Otherwise it's noise
+              // ("main" on every row); same rule the running rows follow.
+              subtitle={
+                duplicateRecentNames.has(recent.projectName)
+                  ? recent.branch
+                  : undefined
+              }
               icon={
                 menuBarFavicon(recent) ??
                 tintedMenuIcon(
                   "folder",
-                  recent.tool ? toolColor(recent.tool) : Color.SecondaryText,
+                  tintByCwd.get(canonicalCwd(recent.cwd)) ??
+                    (recent.tool
+                      ? toolColor(recent.tool)
+                      : Color.SecondaryText),
                 )
               }
               onAction={() => {
