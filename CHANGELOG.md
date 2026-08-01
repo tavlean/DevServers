@@ -1,5 +1,12 @@
 # Dev Servers Changelog
 
+## [Menu bar restart fixed, plus icon and row polish] - {PR_MERGE_DATE}
+
+- **Restarting from the menu bar brings the server back.** Restart used to kill the server and stop there: Raycast unloads a menu bar command the moment its menu closes, and the respawn was still in flight when that happened. The menu bar now holds itself open until the new server is actually spawned. The same race could silently skip the port-helper cleanup after a menu bar Kill; that now runs to completion too.
+- **The Kill action's icon now reads as a trash can.** The old outlined glyph with its floating handle looked like a jar with a cork once tinted red; the solid-body variant from the same icon family keeps the trash silhouette at menu size.
+- **Projects without a usable favicon get their own color in the menu bar.** When a project's favicon only exists as an SVG (which the menu bar can't render as an image), the fallback glyph is now tinted with the favicon's dominant color instead of the framework color, so a row is recognizable per project rather than per framework. The framework tint remains only for projects with no favicon at all.
+- **Branch tags appear only when they mean something.** A project running a single worktree no longer repeats "· main" on every row. The branch shows, main included, when two worktrees of the same project run side by side, or when two entries in the Start section share a project name.
+
 ## [Live rows for starts and restarts, and no more phantom servers] - {PR_MERGE_DATE}
 
 - **Every server you start gets a row the moment you confirm it**, spinning in its project's section until the port binds and then handing over to the real server row, cursor and all. Start several at once and you can watch each one come up instead of guessing behind a single toast.
