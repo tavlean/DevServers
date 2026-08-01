@@ -168,7 +168,11 @@ async function launchRestart(server: DevServer): Promise<void> {
     type: LaunchType.UserInitiated,
     context: {
       spawn: {
-        targets: [{ cwd: server.cwd, name: server.projectName }],
+        // pid pins the restart to the row that was clicked; cwd alone is
+        // ambiguous when a project runs two servers from one folder.
+        targets: [
+          { cwd: server.cwd, name: server.projectName, pid: server.pid },
+        ],
         confirmMulti: false,
         confirmRestarts: false,
         showAutoOpenHint: false,

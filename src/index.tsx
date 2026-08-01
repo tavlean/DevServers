@@ -298,13 +298,22 @@ function ServerItem({
   onRefresh,
 }: ServerItemProps) {
   const { push } = useNavigation();
-  // Cache the favicon URL by port. Survives revalidations and command
-  // relaunches, so the icon doesn't flash back to a placeholder every
-  // refresh interval. keepPreviousData keeps the prior URL visible while
-  // a fresh fetch is in flight.
-  const { data: favicons } = useCachedPromise(detectFavicons, [server.port], {
-    keepPreviousData: true,
-  });
+  // Cache the favicon URL by port AND project. Survives revalidations and
+  // command relaunches, so the icon doesn't flash back to a placeholder
+  // every refresh interval. keepPreviousData keeps the prior URL visible
+  // while a fresh fetch is in flight.
+  //
+  // The cwd is not fetched from — it exists to key the cache. Keyed by port
+  // alone, a project starting on a port another project used last week was
+  // handed the old project's cached icon on first render, and the persist
+  // effect below wrote that wrong icon onto the new project's recents entry
+  // before the real fetch could correct it.
+  const { data: favicons } = useCachedPromise(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    (port: string, _cwd: string) => detectFavicons(port),
+    [server.port, server.cwd],
+    { keepPreviousData: true },
+  );
   const faviconUrl = favicons?.best;
   const faviconRaster = favicons?.raster;
   // Persist resolved favicons onto the project's recents entry so the picker
@@ -528,7 +537,13 @@ function ServerItem({
 // the user sees the dashboard immediately rather than waiting on a blank
 // Start view for the pre-spawn `fetchServers` call.
 interface SpawnRequest {
-  targets: Array<{ cwd: string; name: string }>;
+  // `pid` names the exact server a restart replaces. Without it the flow
+  // falls back to "whatever runs from this cwd", which is ambiguous the
+  // moment a project runs two servers from one folder: the sender clicked a
+  // specific row, and killing the sibling instead is the worst possible
+  // reading of that click. A pid that has died by the time the request is
+  // handled resolves to nothing, which is a cold start, which is right.
+  targets: Array<{ cwd: string; name: string; pid?: number }>;
   // Multi-folder confirm gate, set by the Start command's preference.
   // Always false for single-target spawns (picker rows, folder picker).
   confirmMulti: boolean;
@@ -1312,12 +1327,19 @@ export default function Command(
       // 2. Batch restart confirmation: one alert for any number of
       //    already-running targets.
       const runningTargets = spawn.targets
-        .map((t) => ({ target: t, existing: running.get(t.cwd) }))
+        .map((t) => ({
+          target: t,
+          // By pid when the sender named one (see SpawnRequest.targets); the
+          // cwd map otherwise.
+          existing: t.pid
+            ? serversRef.current.find((s) => s.pid === t.pid)
+            : running.get(t.cwd),
+        }))
         .filter(
           (
             x,
           ): x is {
-            target: { cwd: string; name: string };
+            target: { cwd: string; name: string; pid?: number };
             existing: DevServer;
           } => !!x.existing,
         );
