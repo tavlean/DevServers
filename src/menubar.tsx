@@ -21,7 +21,6 @@ import {
   fetchServers,
   killServer,
   reapProjectHelpersWhenDown,
-  restartServer,
 } from "./servers";
 import { svgFaviconTint } from "./favicons";
 import { readSnapshot, writeSnapshot } from "./snapshot";
@@ -154,6 +153,31 @@ async function launchStartPicker(): Promise<void> {
   });
 }
 
+// Restart delegates to the dashboard's spawn flow, exactly like a start of an
+// already-running project: the flow kills the old server, respawns, raises the
+// "Restarting…" pending row, and diagnoses failures. It cannot run here: a
+// clicked menu bar command survives its click by well under a second (enough
+// for a launchCommand, which is why the Start items work), and a restart's
+// kill-wait → helper reap → spawn chain is longer than that, so the respawn
+// died with the process every time. confirmRestarts: false because this click
+// already is the answer to "restart it?".
+async function launchRestart(server: DevServer): Promise<void> {
+  await launchCommand({
+    name: "index",
+    type: LaunchType.UserInitiated,
+    context: {
+      spawn: {
+        targets: [{ cwd: server.cwd, name: server.projectName }],
+        confirmMulti: false,
+        confirmRestarts: false,
+        showAutoOpenHint: false,
+        requestId:
+          Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      },
+    },
+  });
+}
+
 async function launchRecent(recent: RecentProject): Promise<void> {
   await launchCommand({
     name: "index",
@@ -187,15 +211,19 @@ export default function Command() {
     [],
   );
 
-  // Raycast unloads a menu bar command as soon as its menu closes — including
-  // when the close is the click on one of its items — unless isLoading says
-  // the command is still executing. A fire-and-forget onAction therefore only
-  // reliably runs its first synchronous step: Restart got as far as the
-  // SIGKILL and was torn down before the spawn. Every action whose work
-  // outlives the click runs through here, which keeps isLoading true until
-  // the work settles. A counter rather than a boolean, so an action finishing
-  // can't drop the flag while the initial refresh (or another action) is
-  // still in flight.
+  // Raycast unloads a menu bar command shortly after its menu closes, and
+  // clicking an item is what closes it. Short async chains survive the click
+  // (a launchCommand does; the Start items and launchRestart depend on that),
+  // but second-long chains die partway: Restart used to get exactly as far as
+  // its synchronous SIGKILL and lose the respawn every time, which is why it
+  // now delegates to the dashboard instead of spawning here. isLoading does
+  // NOT reliably extend the click path (the documented isLoading contract
+  // covers root-search and interval launches), so this wrapper is best-effort
+  // only: it holds isLoading through an action's async tail to give work like
+  // Kill's helper reap its best shot at completing, and nothing here may
+  // *depend* on that tail running. A counter rather than a boolean, so an
+  // action finishing can't drop the flag while the initial refresh (or
+  // another action) is still in flight.
   const [busyCount, setBusyCount] = useState(0);
   const stayLoadedWhile = useCallback((work: () => Promise<void>) => {
     setBusyCount((n) => n + 1);
@@ -359,10 +387,7 @@ export default function Command() {
                     title="Restart"
                     icon={menuIcon("restart")}
                     onAction={() => {
-                      stayLoadedWhile(async () => {
-                        await restartServer(server);
-                        await refresh();
-                      });
+                      void launchRestart(server);
                     }}
                   />
                   <MenuBarExtra.Item

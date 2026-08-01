@@ -535,6 +535,14 @@ interface SpawnRequest {
   // Attach a one-time "Auto-open in Browser?" CTA to the Starting toast.
   // The Start command pre-decides this based on a usage counter.
   showAutoOpenHint: boolean;
+  // False skips the "already running — Restart?" confirm for targets that
+  // are up. Set by the menu bar's per-server Restart item, whose click IS
+  // the restart intent: it delegates here because its own process is torn
+  // down too fast to respawn anything itself, and re-asking what the user
+  // just asked for would turn one click into two. Absent means true, which
+  // every start surface wants (a start colliding with a running server is
+  // a surprise worth confirming).
+  confirmRestarts?: boolean;
   // Fresh per send, and the only thing that tells one request from another.
   // The dashboard's spawn flow is once-only per mount, so a request delivered
   // to a dashboard that is already loaded needs an identity the receiver can
@@ -1313,10 +1321,10 @@ export default function Command(
             existing: DevServer;
           } => !!x.existing,
         );
-      const proceed = await confirmRestartBatch(
-        runningTargets,
-        spawn.targets.length,
-      );
+      const proceed =
+        spawn.confirmRestarts === false
+          ? true
+          : await confirmRestartBatch(runningTargets, spawn.targets.length);
       if (!proceed) {
         setSpawnState({ phase: "done" });
         return;
