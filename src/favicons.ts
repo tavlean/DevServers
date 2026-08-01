@@ -8,19 +8,40 @@
 // the bytes it fetches are inlined straight into the Raycast UI. So an icon URL
 // must never turn into an arbitrary outbound GET: it could otherwise reach an
 // external host or a private-network address the user never pointed us at.
-// Every favicon fetch is therefore pinned to the server's own origin, both at
-// the URL it asks for and at the URL the response actually came from.
+// Every favicon fetch is therefore pinned to the server's own origin at every
+// redirect hop, checked BEFORE each request goes out (fetchWithTimeout), with
+// a final check on the URL the response actually came from.
 
-// Fetch with a hard 3s timeout. Returns null on any failure so callers can
-// chain fallbacks cleanly without nested try/catch.
+// Fetch with a hard 3s timeout, never leaving `origin`. Returns null on any
+// failure so callers can chain fallbacks cleanly without nested try/catch.
+//
+// Redirects are walked by hand because fetch's transparent mode contacts the
+// destination before anyone can inspect it: a dev server that redirects off
+// itself would turn our request into an outbound GET to a host the user
+// never pointed us at, even though the response got discarded afterwards.
+// Manual mode lets the walk stop BEFORE the off-origin request is made; the
+// hop cap only bounds a redirect loop.
 async function fetchWithTimeout(
   url: string,
+  origin: string,
   init: RequestInit & { method?: string } = {},
 ): Promise<Response | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3000);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    let target = url;
+    for (let hop = 0; hop < 4; hop++) {
+      if (!isSameOrigin(target, origin)) return null;
+      const res = await fetch(target, {
+        ...init,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      const location = res.headers.get("location");
+      if (res.status < 300 || res.status >= 400 || !location) return res;
+      target = new URL(location, target).toString();
+    }
+    return null;
   } catch {
     return null;
   } finally {
@@ -81,12 +102,12 @@ async function fetchFaviconDataUri(
   origin: string,
   opts: { rejectMonochromeSvg?: boolean } = {},
 ): Promise<string | undefined> {
-  const res = await fetchWithTimeout(url);
+  const res = await fetchWithTimeout(url, origin);
   if (!res || !res.ok) return undefined;
-  // fetch follows redirects transparently, so even an on-origin URL can end up
-  // served by another host. `res.url` is the URL the body actually came from,
-  // after every hop; if it isn't on the origin, treat it like any other failed
-  // lookup and never touch the body.
+  // fetchWithTimeout walked every hop on-origin, so this cannot fire; it
+  // stays as the last line of defense at the single place bytes get inlined
+  // into the UI. An empty res.url (a response we cannot account for) counts
+  // as off-origin, same as always.
   if (!isSameOrigin(res.url, origin)) return undefined;
   const ct = (res.headers.get("content-type") ?? "")
     .split(";")[0]
@@ -227,12 +248,12 @@ export interface ResolvedFavicons {
 export async function detectFavicons(port: string): Promise<ResolvedFavicons> {
   const origin = `http://localhost:${port}`;
 
-  // The page read gets the same origin pin as the icon fetches below: a root
-  // that redirects off this server would otherwise hand us someone else's HTML
-  // to parse, and the GET itself would reach a host the user never pointed us
-  // at. Off-origin means no HTML, and the conventional-path probes still run.
-  const html = await fetchWithTimeout(`${origin}/`).then((r) =>
-    r && isSameOrigin(r.url, origin) ? r.text() : null,
+  // The page read gets the same origin pin as the icon fetches below
+  // (fetchWithTimeout refuses to follow a hop off this server): a root that
+  // redirects elsewhere yields no HTML, and the conventional-path probes
+  // still run.
+  const html = await fetchWithTimeout(`${origin}/`, origin).then((r) =>
+    r ? r.text() : null,
   );
 
   const candidates: Array<{ url: string; rank: number }> = [];
