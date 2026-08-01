@@ -177,6 +177,23 @@ export default function Command() {
     [],
   );
 
+  // Raycast unloads a menu bar command as soon as its menu closes — including
+  // when the close is the click on one of its items — unless isLoading says
+  // the command is still executing. A fire-and-forget onAction therefore only
+  // reliably runs its first synchronous step: Restart got as far as the
+  // SIGKILL and was torn down before the spawn. Every action whose work
+  // outlives the click runs through here, which keeps isLoading true until
+  // the work settles. A counter rather than a boolean, so an action finishing
+  // can't drop the flag while the initial refresh (or another action) is
+  // still in flight.
+  const [busyCount, setBusyCount] = useState(0);
+  const stayLoadedWhile = useCallback((work: () => Promise<void>) => {
+    setBusyCount((n) => n + 1);
+    void work()
+      .catch(() => {})
+      .finally(() => setBusyCount((n) => n - 1));
+  }, []);
+
   const refresh = useCallback(async () => {
     // The dashboard's starts in flight, which is how this surface gets to make
     // the same call it does about a mid-start project's helper rows: they are
@@ -259,7 +276,7 @@ export default function Command() {
       icon={menuIcon("server")}
       title={title}
       tooltip="Dev Servers"
-      isLoading={isLoading}
+      isLoading={isLoading || busyCount > 0}
     >
       {servers.length === 0 ? (
         <MenuBarExtra.Item title="No dev servers running" />
@@ -296,17 +313,17 @@ export default function Command() {
                   title="Restart"
                   icon={menuIcon("restart")}
                   onAction={() => {
-                    void (async () => {
+                    stayLoadedWhile(async () => {
                       await restartServer(server);
                       await refresh();
-                    })();
+                    });
                   }}
                 />
                 <MenuBarExtra.Item
                   title="Kill"
                   icon={tintedMenuIcon("kill", Color.Red)}
                   onAction={() => {
-                    void (async () => {
+                    stayLoadedWhile(async () => {
                       await killServer(server.pid);
                       // Same cleanup the dashboard does. Killing from here
                       // would otherwise strand the project's helpers, which
@@ -315,7 +332,7 @@ export default function Command() {
                       // first look finds the port free and it returns at once.
                       await reapProjectHelpersWhenDown([server.cwd]);
                       await refresh();
-                    })();
+                    });
                   }}
                 />
                 <MenuBarExtra.Separator />
@@ -364,7 +381,7 @@ export default function Command() {
                 }
                 icon={tintedMenuIcon("kill", Color.Red)}
                 onAction={() => {
-                  void (async () => {
+                  stayLoadedWhile(async () => {
                     // allSettled: a server can die between menu open and click,
                     // and one stale pid must not stop the rest of the project.
                     await Promise.allSettled(
@@ -378,7 +395,7 @@ export default function Command() {
                       projectServers.map((s) => s.cwd),
                     );
                     await refresh();
-                  })();
+                  });
                 }}
               />
             ) : null}
@@ -404,10 +421,10 @@ export default function Command() {
                 )
               }
               onAction={() => {
-                void (async () => {
+                stayLoadedWhile(async () => {
                   await visitItem(recent);
                   await launchRecent(recent);
-                })();
+                });
               }}
             />
           ))}
