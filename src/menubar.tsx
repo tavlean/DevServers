@@ -11,6 +11,8 @@ import {
   updateCommandMetadata,
 } from "@raycast/api";
 import { useFrecencySorting, useLocalStorage } from "@raycast/utils";
+import * as os from "node:os";
+import * as path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
 import { readPendingStarts } from "./pendingStore";
@@ -321,19 +323,47 @@ export default function Command() {
     },
   );
 
-  // The six rows the Start section will actually render; the branch-subtitle
-  // rule below judges ambiguity against these, not the full recents list — a
+  // The six rows the Start section will actually render; the subtitle rule
+  // below judges ambiguity against these, not the full recents list — a
   // twin that fell off the end of the list can't confuse anyone.
   const visibleRecents = useMemo(
     () => sortedRecents.slice(0, 6),
     [sortedRecents],
   );
-  const duplicateRecentNames = useMemo(() => {
-    const counts = new Map<string, number>();
+  // Subtitle per Start row, set only when the project name alone is
+  // ambiguous. Same-named rows are usually worktrees of one repo, so the
+  // branch tells them apart; two independent clones can share the branch too
+  // (both sitting on main), and then the folder the project lives in is what
+  // differs. The last resort is the cwd itself, which cannot collide.
+  //
+  // This is stricter than a nicety: MenuBarExtra's docs forbid identical
+  // items at the same level because their onAction handlers misfire, so the
+  // chosen subtitle must actually separate the group, not merely usually.
+  const startSubtitles = useMemo(() => {
+    const byName = new Map<string, RecentProject[]>();
     for (const r of visibleRecents) {
-      counts.set(r.projectName, (counts.get(r.projectName) ?? 0) + 1);
+      const group = byName.get(r.projectName) ?? [];
+      group.push(r);
+      byName.set(r.projectName, group);
     }
-    return new Set([...counts].filter(([, n]) => n > 1).map(([name]) => name));
+    const home = os.homedir();
+    const candidates: Array<(r: RecentProject) => string> = [
+      (r) => r.branch ?? "",
+      (r) => path.basename(path.dirname(r.cwd)),
+      (r) => (r.cwd.startsWith(home) ? `~${r.cwd.slice(home.length)}` : r.cwd),
+    ];
+    const subtitles = new Map<string, string>();
+    for (const group of byName.values()) {
+      if (group.length === 1) continue;
+      const pick =
+        candidates.find((fn) => new Set(group.map(fn)).size === group.length) ??
+        candidates[candidates.length - 1];
+      for (const r of group) {
+        const subtitle = pick(r);
+        if (subtitle) subtitles.set(r.cwd, subtitle);
+      }
+    }
+    return subtitles;
   }, [visibleRecents]);
 
   const terminalApp = prefs.terminalApp ?? DEFAULT_TERMINAL;
@@ -518,15 +548,9 @@ export default function Command() {
             <MenuBarExtra.Item
               key={recent.cwd}
               title={recent.projectName}
-              // Branch only when the name alone is ambiguous — two visible
-              // entries sharing a project name are worktrees of it, and the
-              // branch is what tells them apart. Otherwise it's noise
-              // ("main" on every row); same rule the running rows follow.
-              subtitle={
-                duplicateRecentNames.has(recent.projectName)
-                  ? recent.branch
-                  : undefined
-              }
+              // Set only when the name alone is ambiguous; see startSubtitles
+              // for what it is chosen to guarantee.
+              subtitle={startSubtitles.get(recent.cwd)}
               icon={
                 menuBarFavicon(recent) ??
                 tintedMenuIcon(
