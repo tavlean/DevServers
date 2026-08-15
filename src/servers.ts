@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 import { fetchAliases } from "./aliases";
-import { DevServer } from "./types";
+import { DevServer, Runtime } from "./types";
 
 const execFileAsync = promisify(execFile);
 
@@ -347,18 +347,242 @@ function detectShopifyTool(command: string): ShopifyTool | null {
 
 // A candidate is anything launched from node_modules (broader than .bin/ so
 // we catch `node node_modules/serve/build/main.js` etc.), a bare bun process,
-// OR a Shopify CLI dev process. Over-collection is harmless: only PIDs with a
-// LISTEN socket survive the join below.
+// a Shopify CLI dev process, a known dev server from outside the JS world
+// (`python -m http.server`, `rails s`, `php -S`, …), a script an interpreter
+// is running out of a project folder, or a binary `go run` / `cargo run` /
+// `dotnet run` compiled a moment ago. Over-collection is harmless: only PIDs
+// with a LISTEN socket survive the join below. The line this draws is
+// "something a person started to serve a project", not "everything that
+// listens": Homebrew services, Docker, language servers and the like never
+// match a shape here, and that is what keeps the list a list of dev servers.
 function isCandidate(proc: RawProcess): boolean {
   if (/node_modules\//.test(proc.command)) return true;
   if (detectShopifyTool(proc.command)) return true;
-  const exec = proc.command.split(/\s+/, 1)[0];
-  return /(\/|^)bun$/.test(exec);
+  if (detectRuntime(proc.command) === "bun") return true;
+  if (detectForeignTool(proc.command)) return true;
+  if (compiledArtifactTool(proc.command)) return true;
+  return isProjectScript(proc.command);
 }
 
-function detectRuntime(command: string): "node" | "bun" {
+// The runtime the listening process actually is, read off its executable.
+// Distinct from the tool: a Vite server is tool "vite" on runtime "node" (or
+// "bun"), Python's http.server is tool "http.server" on runtime "python".
+// Interpreters are named; compiled artifacts report their language; anything
+// else falls back to "node", which is what every node_modules launch is.
+function detectRuntime(command: string): Runtime {
+  const exec = commandBase(command.split(/\s+/, 1)[0]).toLowerCase();
+  if (exec === "bun") return "bun";
+  if (exec === "deno") return "deno";
+  if (/^python(?:\d(?:\.\d+)?)?$/.test(exec)) return "python";
+  if (/^ruby(?:\d(?:\.\d+)?)?$/.test(exec)) return "ruby";
+  if (/^php(?:\d(?:\.\d+)?)?$/.test(exec)) return "php";
+  if (exec === "dotnet") return "dotnet";
+  // Not an interpreter: a wrapper (`bundle exec`, `uv run`), a compiled tool
+  // (hugo, caddy), or a compiled artifact. The tool table knows the runtime.
+  const foreign = detectForeignTool(command);
+  if (foreign) return foreign.runtime;
+  const artifact = compiledArtifactTool(command);
+  if (artifact) return artifact;
+  return "node";
+}
+
+// Tokens of a command line, minus the executable.
+function argsAfterExec(command: string): string[] {
+  return command.trim().split(/\s+/).slice(1);
+}
+
+// Dev servers that live outside node_modules, matched by what the process
+// runs rather than by anything the folder is called. Each entry names the
+// executable (or a script token reachable through an interpreter, since
+// `.venv/bin/flask` runs as `.venv/bin/python .venv/bin/flask run`) plus the
+// argument shape that means "serve", so `rails console` and `flask shell`
+// stay out. Kept deliberately narrow, on the same principle as the Shopify
+// detector: a name a user picked, not any process whose path contains it.
+type ForeignMatch = { tool: string; runtime: Runtime };
+
+function isPythonExec(exec: string): boolean {
+  return /^python(?:\d(?:\.\d+)?)?$/i.test(exec);
+}
+
+// Runtime a subcommand token implies when reached through `bundle exec`,
+// `poetry run`, `uv run`, `pipenv run`, `pdm run`: the wrapper's runtime is
+// the tool's runtime.
+const RUNTIME_WRAPPERS: Record<string, Runtime> = {
+  bundle: "ruby",
+  poetry: "python",
+  uv: "python",
+  pipenv: "python",
+  pdm: "python",
+  hatch: "python",
+};
+
+// Executable/script names and the argument that must follow for it to be a
+// serving command. `null` means any invocation is a server (uvicorn, puma).
+const FOREIGN_SERVERS: Record<
+  string,
+  { runtime: Runtime; serve: RegExp | null; tool?: string }
+> = {
+  flask: { runtime: "python", serve: /^run$/ },
+  uvicorn: { runtime: "python", serve: null },
+  gunicorn: { runtime: "python", serve: null },
+  hypercorn: { runtime: "python", serve: null },
+  daphne: { runtime: "python", serve: null },
+  fastapi: { runtime: "python", serve: /^(?:dev|run)$/ },
+  mkdocs: { runtime: "python", serve: /^serve$/ },
+  streamlit: { runtime: "python", serve: /^run$/ },
+  "manage.py": { runtime: "python", serve: /^runserver/, tool: "django" },
+  rails: { runtime: "ruby", serve: /^(?:s|server)$/ },
+  puma: { runtime: "ruby", serve: null },
+  rackup: { runtime: "ruby", serve: null },
+  jekyll: { runtime: "ruby", serve: /^(?:s|serve)$/ },
+  artisan: { runtime: "php", serve: /^serve$/, tool: "laravel" },
+  symfony: { runtime: "php", serve: /^server:start$/ },
+  hugo: { runtime: "other", serve: /^(?:server|serve)$/ },
+  zola: { runtime: "other", serve: /^serve$/ },
+  caddy: { runtime: "other", serve: /^(?:file-server|run)$/ },
+  miniserve: { runtime: "other", serve: null },
+  trunk: { runtime: "rust", serve: /^serve$/ },
+  air: { runtime: "go", serve: null },
+};
+
+function detectForeignTool(command: string): ForeignMatch | null {
+  const tokens = command.trim().split(/\s+/);
+  if (tokens.length === 0 || !tokens[0]) return null;
+  const exec = commandBase(tokens[0]);
+  const args = argsAfterExec(command);
+
+  // `python -m http.server [port]`, `python -m flask run`, `-m uvicorn`,
+  // `-m mkdocs serve`, `-m streamlit run`.
+  if (isPythonExec(exec)) {
+    const m = args.indexOf("-m");
+    if (m !== -1 && args[m + 1]) {
+      const mod = args[m + 1];
+      if (mod === "http.server" || mod === "SimpleHTTPServer") {
+        return { tool: "http.server", runtime: "python" };
+      }
+      const known = FOREIGN_SERVERS[mod];
+      if (known && known.runtime === "python") {
+        if (known.serve === null || known.serve.test(args[m + 2] ?? "")) {
+          return { tool: known.tool ?? mod, runtime: "python" };
+        }
+      }
+    }
+  }
+  // `ruby -run -e httpd . -p 8000` (WEBrick one-liner).
+  if (/^ruby(?:\d(?:\.\d+)?)?$/.test(exec) && args.includes("httpd")) {
+    return { tool: "webrick", runtime: "ruby" };
+  }
+  // `php -S localhost:8000`.
+  if (/^php(?:\d(?:\.\d+)?)?$/.test(exec) && args.includes("-S")) {
+    return { tool: "php", runtime: "php" };
+  }
+  // `deno run|serve|task …` is a server whenever it listens.
+  if (exec === "deno" && /^(?:run|serve|task)$/.test(args[0] ?? "")) {
+    return { tool: "deno", runtime: "deno" };
+  }
+  // `dotnet run` / `dotnet watch`: the launcher. Its compiled child is caught
+  // by compiledArtifactTool; the launcher itself rarely listens.
+  if (exec === "dotnet" && /^(?:run|watch)$/.test(args[0] ?? "")) {
+    return { tool: "dotnet", runtime: "dotnet" };
+  }
+  // `go run` / `cargo run|watch`: launchers, same story.
+  if (exec === "go" && args[0] === "run") return { tool: "go", runtime: "go" };
+  if (exec === "cargo" && /^(?:run|watch)$/.test(args[0] ?? "")) {
+    return { tool: "rust", runtime: "rust" };
+  }
+
+  // Named tool, reached directly or through an interpreter or wrapper. Scan
+  // the first few tokens so `python .venv/bin/flask run`, `bundle exec rails
+  // s`, `uv run uvicorn app:app` and `.venv/bin/uvicorn app:app` all land.
+  // Puma and gunicorn rewrite their process title (`puma: cluster worker 0:
+  // 1234 [app]`, `gunicorn: master [app]`), so the name may carry a colon.
+  const scan = [exec, ...args.slice(0, 4)];
+  for (let i = 0; i < scan.length; i++) {
+    const name = commandBase(scan[i]).replace(/:$/, "");
+    const known = FOREIGN_SERVERS[name];
+    if (!known) continue;
+    // Whatever follows the tool name is its own argv; args[] is offset by one
+    // because scan[0] is the executable.
+    const next = i === 0 ? args[0] : args[i];
+    if (known.serve !== null && !known.serve.test(next ?? "")) continue;
+    let runtime = known.runtime;
+    // Runtime is the interpreter's when it is one; the wrapper's when the
+    // tool came through `bundle exec` or `uv run`.
+    if (i > 0) {
+      const wrapper = RUNTIME_WRAPPERS[exec];
+      if (wrapper) runtime = wrapper;
+      else if (isPythonExec(exec)) runtime = "python";
+      else if (/^ruby(?:\d(?:\.\d+)?)?$/.test(exec)) runtime = "ruby";
+      else if (/^php(?:\d(?:\.\d+)?)?$/.test(exec)) runtime = "php";
+    }
+    return { tool: known.tool ?? name, runtime };
+  }
+  return null;
+}
+
+// A binary the toolchain compiled a moment ago and is running for the user:
+// `go run` builds into the go-build cache, `cargo run` into target/debug or
+// target/release, `dotnet run` into bin/Debug or bin/Release. The path is
+// the evidence; the tool is the language.
+function compiledArtifactTool(
+  command: string,
+): "go" | "rust" | "dotnet" | null {
   const exec = command.split(/\s+/, 1)[0];
-  return /(\/|^)bun$/.test(exec) ? "bun" : "node";
+  if (/\/go-build\d*\/[^ ]*\/exe\//.test(exec)) return "go";
+  if (/\/target\/(?:debug|release)\/[^/]+$/.test(exec)) return "rust";
+  // `dotnet /path/bin/Debug/net9.0/App.dll`.
+  if (
+    commandBase(exec) === "dotnet" &&
+    /\/bin\/(?:Debug|Release)\/[^ ]+\.dll(?:\s|$)/.test(command)
+  ) {
+    return "dotnet";
+  }
+  return null;
+}
+
+// Path prefixes under which a script is somebody else's infrastructure, not
+// a project the user is serving: system and package-manager installs, plus
+// any dot-directory (`~/.vscode/extensions/…/server.py`, `~/.local/…`,
+// `~/.cache/…`), where editors and tools keep the servers they run for
+// themselves.
+const SYSTEM_SCRIPT_PREFIX =
+  /^(?:\/usr\/|\/opt\/|\/System\/|\/Library\/|\/Applications\/|\/nix\/)/;
+
+// `node server.js`, `python app.py`, `ruby app.rb`, `php -S` aside: an
+// interpreter running a script that lives in a project folder. The script is
+// the first argument that isn't a flag; it has to look like a source file, and
+// it must not be under a system prefix or inside a dot-directory. A relative
+// path is always accepted, since only a person in a project folder types one.
+function isProjectScript(command: string): boolean {
+  const tokens = command.trim().split(/\s+/);
+  const exec = commandBase(tokens[0] ?? "").toLowerCase();
+  const isNode = exec === "node" || exec === "nodejs";
+  if (
+    !isNode &&
+    !isPythonExec(exec) &&
+    !/^ruby(?:\d(?:\.\d+)?)?$/.test(exec) &&
+    !/^php(?:\d(?:\.\d+)?)?$/.test(exec)
+  ) {
+    return false;
+  }
+  const args = tokens.slice(1);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("-")) {
+      // Flags that take a value: skip it so `-r dotenv/config` or `-W ignore`
+      // never reads as the script.
+      if (/^(?:-r|--require|--import|--loader|-W|-X|-c|-m|-e|-p)$/.test(arg))
+        i++;
+      continue;
+    }
+    if (!/\.(?:[cm]?[jt]s|py|rb|php)$/.test(arg)) return false;
+    if (path.isAbsolute(arg)) {
+      if (SYSTEM_SCRIPT_PREFIX.test(arg)) return false;
+      if (/\/\.[^/]/.test(arg)) return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 // Resolve the owning package name from a path that goes through
@@ -418,9 +642,13 @@ function detectToolFromCommand(command: string, cwd: string): string {
     if (name === "vite" && hasSvelteConfig(cwd)) return "sveltekit";
     return name;
   }
-  // Bare bun script (no node_modules anywhere in the command).
-  if (detectRuntime(command) === "bun") return "bun";
-  return "node";
+  const foreign = detectForeignTool(command);
+  if (foreign) return foreign.tool;
+  const artifact = compiledArtifactTool(command);
+  if (artifact) return artifact;
+  // Bare script under an interpreter (no node_modules anywhere in the
+  // command): the tool is the runtime itself.
+  return detectRuntime(command);
 }
 
 // Native platform-binary packages are npm's convention for shipping
@@ -483,6 +711,29 @@ function detectTool(
   return stripPlatformSuffix(own);
 }
 
+// The command line a restart replays when the project has no package.json
+// script to run instead (see startDevServer). Usually the process's own. A
+// binary `go run` / `cargo run` / `dotnet run` compiled is the exception: it
+// is deleted or stale by the time anyone restarts, so the launcher's command
+// line, found up the tree, is what starts the project again.
+function restartCommandFor(
+  proc: RawProcess,
+  procByPid: Map<number, RawProcess>,
+): string {
+  if (!compiledArtifactTool(proc.command)) return proc.command;
+  let cur = proc;
+  for (let depth = 0; depth < ANCESTOR_SCAN_DEPTH; depth++) {
+    const parent = procByPid.get(cur.ppid);
+    if (!parent) break;
+    const tool = detectForeignTool(parent.command)?.tool;
+    if (tool === "go" || tool === "rust" || tool === "dotnet") {
+      return parent.command;
+    }
+    cur = parent;
+  }
+  return proc.command;
+}
+
 function hasSvelteConfig(cwd: string): boolean {
   return (
     fs.existsSync(`${cwd}/svelte.config.js`) ||
@@ -530,7 +781,8 @@ interface PidMeta {
   lstart: string;
   cwd: string;
   tool: string;
-  runtime: "node" | "bun";
+  runtime: Runtime;
+  command: string;
 }
 const pidMetaCache = new Map<number, PidMeta>();
 
@@ -567,6 +819,7 @@ export async function fetchServers(
       cwd,
       tool: detectTool(proc, cwd, procByPid),
       runtime: detectRuntime(proc.command),
+      command: restartCommandFor(proc, procByPid),
     });
   }
   // Evict entries for processes that are gone so the cache stays bounded.
@@ -599,6 +852,12 @@ export async function fetchServers(
   for (const proc of live) {
     const meta = pidMetaCache.get(proc.pid);
     if (!meta) continue;
+    // A process working out of the filesystem root is a daemon (launchd sets
+    // cwd to `/` for everything it starts), not a project anyone is serving,
+    // and it would render as a project named "/". Nothing a person starts to
+    // serve a folder runs from there. Cached like any other pid so the cwd
+    // lookup is not repeated for it on every poll.
+    if (meta.cwd === "/") continue;
     const listener = portByPid.get(proc.pid);
     if (listener === undefined) continue;
     const port = listener.port;
@@ -626,6 +885,7 @@ export async function fetchServers(
       customUrls,
       tool: meta.tool,
       runtime: meta.runtime,
+      command: meta.command,
       cwd: meta.cwd,
       projectKey,
       projectName,
@@ -722,8 +982,23 @@ function suppressHelperRows(
       .filter((s) => parseInt(s.port, 10) < EPHEMERAL_PORT_MIN)
       .map((s) => s.cwd),
   );
+  const shownPortByPid = new Map(servers.map((s) => [s.pid, s.port]));
   return servers.filter((server) => {
-    if (parseInt(server.port, 10) < EPHEMERAL_PORT_MIN) return true;
+    if (parseInt(server.port, 10) < EPHEMERAL_PORT_MIN) {
+      // A deliberate port is a server someone opens, with one exception: a
+      // descendant holding the SAME port as a shown ancestor is that
+      // ancestor's worker, not a second server. Reloading supervisors work
+      // this way (uvicorn --reload, gunicorn, puma clustered: the parent
+      // binds and the children inherit the socket), and one row per port is
+      // the honest count. The ancestor is the row that stays because it is
+      // the one a Kill must reach; killing a worker just gets it respawned.
+      let cur = procByPid.get(server.pid);
+      for (let depth = 0; depth < ANCESTOR_SCAN_DEPTH && cur; depth++) {
+        cur = procByPid.get(cur.ppid);
+        if (cur && shownPortByPid.get(cur.pid) === server.port) return false;
+      }
+      return true;
+    }
     if (anchoredCwds.has(server.cwd)) return false;
     if (settlingCwds?.has(server.cwd)) return false;
     // Orphaned alone is not enough: every server this extension starts is
@@ -1043,8 +1318,20 @@ async function pickShopifyThemePort(): Promise<number | null> {
 //   the PID has been replaced by the new server. Use `spawnLogPath(cwd)`
 //   to reach it from error toasts.
 //
-// Throws if planSpawn can't find a runnable command.
-export async function startDevServer(cwd: string): Promise<void> {
+// `replay` is the command line to run when the project has no dev script or
+// Shopify root to plan from: the one the server being restarted was running
+// (DevServer.command). It is `ps` output, argv joined by spaces, so an
+// argument that itself contained spaces would come apart; in practice a dev
+// server's command line is a binary and a handful of flags, and it is exactly
+// what the user typed. Restart is the only caller that has one to pass. A
+// project the extension can plan for ignores it: package.json is the
+// project's stated intent and wins over however the last server was started.
+//
+// Throws if neither planSpawn nor `replay` yields a runnable command.
+export async function startDevServer(
+  cwd: string,
+  replay?: string,
+): Promise<void> {
   // Clear anything the project's last run left behind before adding to it.
   // Helpers outlive the server that spawned them, so a project killed hours
   // ago can still be holding ports, and this is the only moment we can be
@@ -1053,12 +1340,16 @@ export async function startDevServer(cwd: string): Promise<void> {
   // disturbs nothing.
   await reapProjectHelpers(cwd);
   const plan = planSpawn(cwd);
-  if (!plan) {
+  if (!plan && !replay) {
     throw new Error(
       "No way to start this project. Expected a package.json with a dev/start/develop script (or one invoking a known dev-server tool), or a Shopify theme/app root.",
     );
   }
-  const { cmd, args } = plan;
+  // Positional args for the planned form, so zsh re-quotes them (see below);
+  // the replay is already a shell line and runs as one.
+  const shellArgs = plan
+    ? ["-ilc", 'exec "$0" "$@"', plan.cmd, ...plan.args]
+    : ["-ilc", `exec ${replay}`];
   // Theme spawns export a pre-picked port when the CLI default is taken;
   // see the port-fallback section above. Applies to bare theme roots and to
   // themes wrapping `shopify theme dev` in a dev script alike.
@@ -1068,7 +1359,7 @@ export async function startDevServer(cwd: string): Promise<void> {
     if (port !== null) env.SHOPIFY_FLAG_PORT = String(port);
   }
   const out = fs.openSync(spawnLogPath(cwd), "a");
-  const child = spawn("/bin/zsh", ["-ilc", 'exec "$0" "$@"', cmd, ...args], {
+  const child = spawn("/bin/zsh", shellArgs, {
     cwd,
     env,
     detached: true,
@@ -1294,5 +1585,5 @@ export async function reapProjectHelpersWhenDown(
 // reap to see the project as down.
 export async function restartServer(server: DevServer): Promise<void> {
   await killServer(server.pid);
-  await startDevServer(server.cwd);
+  await startDevServer(server.cwd, server.command);
 }

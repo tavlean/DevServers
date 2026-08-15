@@ -50,7 +50,7 @@ import {
   startDevServer,
 } from "./servers";
 import { pokeMenuBar, writeSnapshot } from "./snapshot";
-import { toolColor, toolLabel } from "./tool-display";
+import { runtimeColor, runtimeTag, toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
 
 // Hand off to the Start Dev Server command. Used by the empty-state
@@ -380,13 +380,18 @@ function ServerItem({
           : []),
         ...(localBadgeTag ? [localBadgeTag] : []),
         // Runtime tag is suppressed when it duplicates the tool tag (e.g.
-        // tool is already "bun"), and rendered only when the user has the
-        // tool tag visible; otherwise standalone "bun" would look orphaned.
-        ...(show.tool && server.runtime === "bun" && server.tool !== "bun"
+        // tool is already "bun", or "go" on a Go binary), when it is plain
+        // Node (the default, so not worth a tag), and rendered only when the
+        // user has the tool tag visible; otherwise a standalone "Python" would
+        // look orphaned.
+        ...(show.tool && runtimeTag(server)
           ? [
               {
-                tag: { value: "Bun", color: Color.Yellow },
-                tooltip: "Listening process is running on the Bun runtime",
+                tag: {
+                  value: runtimeTag(server) as string,
+                  color: runtimeColor(server.runtime),
+                },
+                tooltip: `Listening process is running on ${runtimeTag(server)}`,
               },
             ]
           : []),

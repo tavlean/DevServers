@@ -11,9 +11,10 @@ See every dev server running on your Mac, organized by project rather than by po
 ## Dashboard
 
 - Auto-detects Vite, Next.js, SvelteKit, Astro, Nuxt, Webpack, Remix, Wrangler, Shopify CLI, Bun, and anything else running out of `node_modules`
+- Also sees servers from outside the JS world: Python (`http.server`, Flask, Django, uvicorn, FastAPI, gunicorn, MkDocs), Ruby (Rails, Puma, Jekyll, WEBrick), PHP (`php -S`, Laravel), Deno, `go run`, `cargo run`, `dotnet run`, Hugo, Caddy, and any script an interpreter runs from a project folder
 - Groups servers by project; git worktrees collapse into one section with per-row branch tags
 - Kill one server (`⌃X`), a whole project (`⌃⇧X`), or everything (`⌃⌥X`); bulk kills ask first
-- Restart (`⌘⇧R`) with the right package manager, detected from the lockfile (npm, pnpm, yarn, bun)
+- Restart (`⌘⇧R`) with the right package manager, detected from the lockfile (npm, pnpm, yarn, bun); a project without a package.json is restarted with the command it was running
 - Shows [portless](https://github.com/vercel-labs/portless) custom domains, real favicons, uptime, and framework tags
 - Open in browser, editor (`⌘E`), or terminal (`⌘T`); copy the URL, network URL for phone testing (`⌘⌥C`), or port (`⌘⌥P`)
 - View any server's startup log (`⌘L`), live-tailed while open
