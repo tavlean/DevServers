@@ -41,8 +41,10 @@ import {
   EPHEMERAL_PORT_MIN,
   byRecency,
   fetchServers,
+  canPlanStart,
   killProcess,
   killServer,
+  restartReplay,
   openInBackground,
   reapProjectHelpersWhenDown,
   restartServer,
@@ -357,6 +359,9 @@ function ServerItem({
     hasAlias && show.localUrl
       ? { tag: { value: `localhost:${server.port}` } }
       : undefined;
+  // Runtime badge text, or null when the tool tag already says it (see
+  // runtimeTag).
+  const runtime = runtimeTag(server);
 
   return (
     <List.Item
@@ -384,14 +389,11 @@ function ServerItem({
         // Node (the default, so not worth a tag), and rendered only when the
         // user has the tool tag visible; otherwise a standalone "Python" would
         // look orphaned.
-        ...(show.tool && runtimeTag(server)
+        ...(show.tool && runtime
           ? [
               {
-                tag: {
-                  value: runtimeTag(server) as string,
-                  color: runtimeColor(server.runtime),
-                },
-                tooltip: `Listening process is running on ${runtimeTag(server)}`,
+                tag: { value: runtime, color: runtimeColor(server.runtime) },
+                tooltip: `Listening process is running on ${runtime}`,
               },
             ]
           : []),
@@ -1431,9 +1433,33 @@ export default function Command(
       //    processes. The optimistic update drops the doomed rows from the
       //    list immediately, restart()-style, so each "Restarting…" row from
       //    above stands in for its server rather than sitting on top of it.
-      const doomedPids = new Set(runningTargets.map((rt) => rt.existing.pid));
+      // What each replacement will run is decided before the kill, and a
+      // target that cannot come back (a puma/gunicorn title with no dev
+      // script to plan from) is refused here rather than killed: see
+      // restartReplay. Its refusal joins the per-target failures in step 5.
+      const replayByCwd = new Map<string, string | undefined>();
+      const refused = new Map<string, Error>();
+      for (const rt of runningTargets) {
+        try {
+          replayByCwd.set(rt.target.cwd, restartReplay(rt.existing));
+        } catch (err) {
+          refused.set(
+            rt.target.cwd,
+            err instanceof Error ? err : new Error(String(err)),
+          );
+        }
+      }
+      const doomedPids = new Set(
+        runningTargets
+          .filter((rt) => !refused.has(rt.target.cwd))
+          .map((rt) => rt.existing.pid),
+      );
       await mutate(
-        Promise.all(runningTargets.map((rt) => killServer(rt.existing.pid))),
+        Promise.all(
+          runningTargets
+            .filter((rt) => !refused.has(rt.target.cwd))
+            .map((rt) => killServer(rt.existing.pid, rt.existing.workerPids)),
+        ),
         {
           optimisticUpdate: (current) =>
             (current ?? []).filter((s) => !doomedPids.has(s.pid)),
@@ -1462,7 +1488,9 @@ export default function Command(
             pre?.ignorePids ??
             serversRef.current.filter((s) => s.cwd === t.cwd).map((s) => s.pid);
           try {
-            await startDevServer(t.cwd);
+            const refusal = refused.get(t.cwd);
+            if (refusal) throw refusal;
+            await startDevServer(t.cwd, replayByCwd.get(t.cwd));
             await recordSeen({
               cwd: t.cwd,
               projectName: t.name,
@@ -1762,7 +1790,12 @@ export default function Command(
     if (servers.length === 0) return;
     const byCwd = new Map<string, ReturnType<typeof toRecent>>();
     for (const s of servers) {
-      if (!byCwd.has(s.cwd)) byCwd.set(s.cwd, toRecent(s));
+      // A recent is a promise the Start picker can start it. A folder with
+      // nothing to plan from (a `python -m http.server` in ~/Docs, a Rails
+      // app) is a running server, not a startable project, so it stays out.
+      if (!byCwd.has(s.cwd) && canPlanStart(s.cwd)) {
+        byCwd.set(s.cwd, toRecent(s));
+      }
     }
     recordSeenBatch([...byCwd.values()]).catch(() => {
       // Recents are a best-effort enhancement; a write failure must not
@@ -1772,9 +1805,11 @@ export default function Command(
 
   async function kill(pid: number) {
     // Captured before the kill: afterwards this pid is gone from `servers`.
-    const cwd = servers.find((s) => s.pid === pid)?.cwd;
+    const victim = servers.find((s) => s.pid === pid);
+    const cwd = victim?.cwd;
+    const workers = victim?.workerPids ?? [];
     try {
-      await mutate(killProcess(pid), {
+      await mutate(killProcess(pid, workers), {
         optimisticUpdate: (current) =>
           (current ?? []).filter((s) => s.pid !== pid),
         rollbackOnError: true,
@@ -1808,7 +1843,9 @@ export default function Command(
     try {
       await mutate(
         (async () => {
-          await Promise.all(targets.map((s) => killProcess(s.pid)));
+          await Promise.all(
+            targets.map((s) => killProcess(s.pid, s.workerPids)),
+          );
           // Killing does not take the helpers with it, and SIGTERM returns
           // before the servers release their ports, so this waits for each
           // folder to go quiet before reaping it.
@@ -1843,7 +1880,9 @@ export default function Command(
     try {
       await mutate(
         (async () => {
-          await Promise.all(servers.map((s) => killProcess(s.pid)));
+          await Promise.all(
+            servers.map((s) => killProcess(s.pid, s.workerPids)),
+          );
           // Killing does not take the helpers with it, and SIGTERM returns
           // before the servers release their ports, so this waits for each
           // folder to go quiet before reaping it.

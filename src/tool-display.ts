@@ -137,33 +137,22 @@ export function toolColor(
   return colors[key] ?? Color.Blue;
 }
 
-// Runtime names for the small secondary badge next to the tool tag.
-const RUNTIME_LABELS: Record<Runtime, string | null> = {
-  node: null, // the default; a badge would be noise on most rows
-  bun: "Bun",
-  deno: "Deno",
-  python: "Python",
-  ruby: "Ruby",
-  php: "PHP",
-  go: "Go",
-  rust: "Rust",
-  dotnet: ".NET",
-  other: null,
-};
-
 // The runtime badge text for a row, or null when there is nothing worth
 // saying: Node (the default), an unknown runtime, or a runtime the tool tag
 // already names (tool "bun" on Bun, tool "go" on a Go binary, "php" on PHP).
+// Labels come from the tool table so the tag and the badge can never spell a
+// language two ways.
 export function runtimeTag(server: DevServer): string | null {
-  const label = RUNTIME_LABELS[server.runtime];
-  if (!label) return null;
-  if (server.tool.toLowerCase() === server.runtime) return null;
-  return label;
+  const runtime: Runtime = server.runtime;
+  if (runtime === "node" || runtime === "other") return null;
+  if (server.tool.toLowerCase() === runtime) return null;
+  return toolLabel(runtime);
 }
 
+// Same palette as the tool tag of the same name, so a Bun badge and a Bun tag
+// are the same yellow.
 export function runtimeColor(
   runtime: Runtime,
 ): Color | { light: string; dark: string } {
-  if (runtime === "bun") return Color.Yellow;
   return toolColor(runtime);
 }

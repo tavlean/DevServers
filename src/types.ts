@@ -20,7 +20,8 @@ export interface DevServer {
   customUrls?: string[]; // custom domains pointing at this port (e.g. https://myapp.localhost)
   tool: string; // vite | next | webpack | http.server | rails | etc.
   runtime: Runtime; // the actual listening process's runtime
-  command: string; // command line a restart replays when the project has no package.json script
+  command?: string; // command line a restart replays when there is no package.json script; absent when the process rewrote its title and nothing above it is replayable
+  workerPids: number[]; // same-port descendants folded into this row (uvicorn --reload, gunicorn/puma workers); killed along with it
   cwd: string; // /Users/tav/Dev/MyProject (the worktree directory)
   projectKey: string; // stable id for grouping; cwd, or git common-dir (the .git path) for repos
   projectName: string; // MyProject (display label for the project section)

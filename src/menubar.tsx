@@ -440,7 +440,10 @@ export default function Command() {
                         // until the next interval. The HUD is still truthful
                         // at this moment: a SIGKILL that the syscall accepted
                         // cannot be refused, only briefly outlived.
-                        const killed = killServer(server.pid);
+                        const killed = killServer(
+                          server.pid,
+                          server.workerPids,
+                        );
                         await showHUD(`Killed ${server.projectName}`);
                         await killed;
                         // Refresh before the reap so the menu bar count drops
@@ -513,7 +516,9 @@ export default function Command() {
                       // for the ordering lesson — and refresh runs before the
                       // reap so the count drops promptly.
                       const killed = Promise.allSettled(
-                        projectServers.map((server) => killServer(server.pid)),
+                        projectServers.map((server) =>
+                          killServer(server.pid, server.workerPids),
+                        ),
                       );
                       await showHUD(
                         projectServers.length === 2
