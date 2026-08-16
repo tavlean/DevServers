@@ -797,6 +797,29 @@ function hasSvelteConfig(cwd: string): boolean {
   );
 }
 
+// A working directory that belongs to an application rather than to a
+// project: an app's private state under a dot-directory directly in the home
+// folder (`~/.codex/visualizations/…/<uuid>` is where Codex serves its
+// visualizations from; `~/.cursor`, `~/.vscode`, `~/.cache`, `~/.local` are
+// where editors and tools keep the servers they run for themselves), the
+// per-user or system Library, or a system install prefix. A server there is
+// somebody's plumbing however it was started, and with no git repo to name it
+// by it would render as a row called after a UUID or a version number. Applies
+// to every detection kind alike; the node_modules rule is no exception, since
+// an editor extension's bundled Vite is exactly this. Only the FIRST segment
+// under home is checked, so a dot-directory deeper down (`~/dev/app/.worktrees/
+// feature`, `~/.dotfiles`-style repos aside) stays a project.
+const TOOL_OWNED_CWD_PREFIX =
+  /^(?:\/usr\/|\/opt\/|\/System\/|\/Library\/|\/Applications\/|\/nix\/)/;
+
+function isToolOwnedCwd(cwd: string): boolean {
+  if (TOOL_OWNED_CWD_PREFIX.test(cwd)) return true;
+  const home = os.homedir();
+  if (cwd === home || !cwd.startsWith(home + path.sep)) return false;
+  const first = cwd.slice(home.length + 1).split(path.sep, 1)[0];
+  return first.startsWith(".") || first === "Library";
+}
+
 // A single dev-server PID often has multiple LISTEN sockets: the main HTTP
 // server plus ephemeral HMR/IPC/prebundling ports. Pick the LOWEST per PID
 // because configured dev ports (3000, 4321, 5173, 8080) are always below
@@ -888,15 +911,18 @@ export async function fetchServers(
   // into one group while still letting us show the branch on each row. The
   // project's display name is the basename of the common-dir's parent (the
   // repo root).
-  // A bare script working out of the filesystem root is a daemon (launchd
-  // sets cwd to `/` for everything it starts), not a project anyone is
-  // serving, and it would render as a project named "/". Only the bare-script
-  // rule is held to this: `sudo python -m http.server 80` run from `/` is
-  // still a server someone started on purpose, and it keeps its row. Decided
-  // here, before the git pass, so the daemon costs no `git rev-parse` either.
+  // Where a server works from decides whether it is anyone's project at all;
+  // see isToolOwnedCwd. Decided here, before the git pass, so a hidden pid
+  // costs no `git rev-parse` either.
   const listed = live.filter((p) => {
     const meta = pidMetaCache.get(p.pid);
-    return meta && !(meta.cwd === "/" && meta.tool === meta.runtime);
+    if (!meta) return false;
+    if (isToolOwnedCwd(meta.cwd)) return false;
+    // A bare script working out of the filesystem root is a daemon (launchd
+    // sets cwd to `/` for everything it starts). Only the bare-script rule is
+    // held to this: `sudo python -m http.server 80` run from `/` is still a
+    // server someone started on purpose, and it keeps its row.
+    return !(meta.cwd === "/" && meta.tool === meta.runtime);
   });
   const uniqueCwds = [
     ...new Set(
