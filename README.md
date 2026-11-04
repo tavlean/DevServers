@@ -1,11 +1,11 @@
 # Dev Servers
 
-See every dev server running on your Mac, organized by project rather than by port. Kill, restart, open, or start servers without leaving Raycast, and keep a live count in your menu bar.
+See every dev server running on your Mac, organized by project rather than by port. Kill, restart, open, or start servers without leaving Raycast, and keep a live count in your menu bar. Starting a project whose `node_modules` is gone installs its dependencies first, so a cleaned-up or freshly cloned project still starts in one step.
 
 ## Commands
 
 - **Dev Servers**: a live dashboard of everything running, grouped by project.
-- **Start Dev Server**: spin up a server from a Finder selection, a recent project, or any folder.
+- **Start Dev Server**: spin up a server from a Finder selection, a recent project, or any folder, installing dependencies first if they're missing.
 - **Dev Servers Menu Bar**: the running count in your menu bar, with quick actions in the dropdown.
 
 ## Dashboard
@@ -24,8 +24,9 @@ See every dev server running on your Mac, organized by project rather than by po
 
 - Works from a Finder selection (multi-folder too), a picker of recently seen projects, or the native folder dialog. Run it straight from Finder and the selection starts right away; reach the picker from the dashboard (`⌘N`) and the same selection waits at the top as **Selected in Finder** until you press `↵`
 - Finds the right script automatically: `dev`, `start`, `develop`, then monorepo names like `dev:web`
+- Installs missing dependencies for you: a project with no `node_modules` gets one prompt, then an install with its own package manager (at the workspace root in monorepos) and the server start, in one step. Tick "Do not show this again" to make it automatic. The picker tags such projects **Not installed**
 - Shopify support: themes start with `shopify theme dev` (with automatic port fallback when 9292 is taken), app roots with `shopify app dev`, and Hydrogen storefronts through their normal scripts
-- A start that never binds a port says so on its row, names the cause when it can, and keeps **View Startup Log** a keystroke away. A restart that doesn't come back does the same
+- A start that never binds a port says so on its row, names the cause when it can (a port in use, a missing command, a failed install), and keeps **View Startup Log** a keystroke away. When installing is the fix, the row offers **Install Dependencies & Start**. A restart that doesn't come back does the same
 - First-run note for Shopify: run `shopify theme dev --store <your-store>` once in a terminal so the CLI remembers your store; a background spawn can't answer its login prompt
 - Note for portless users: dev scripts wrapped in `portless run` need the portless proxy already running, since a background spawn has no TTY for its sudo prompt. Run `portless service install` once and the proxy starts at boot, so starts keep working after a reboot
 
@@ -34,7 +35,7 @@ See every dev server running on your Mac, organized by project rather than by po
 - Live count of running servers next to the icon (toggleable)
 - Each server gets a submenu: open, restart, kill, copy URL or port, editor, terminal
 - Projects running several servers get a one-click kill-all item ("Kill Both Servers", "Kill All 3 Servers")
-- A **Start** section lists your recent projects, ranked by how often you start them
+- A **Start** section lists the projects you ran most recently, including ones started from a terminal
 - Starts hand off to the dashboard, so you can watch the server come up
 
 ## Preferences
