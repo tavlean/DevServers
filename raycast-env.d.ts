@@ -43,7 +43,9 @@ declare namespace Preferences {
   /** Preferences accessible in the `menubar` command */
   export type Menubar = ExtensionPreferences & {
   /** Menu Bar - Show the number of running dev servers next to the menu bar icon */
-  "showCount": boolean
+  "showCount": boolean,
+  /** Start Section Order - How the projects under Start are ordered: by when they last ran (including ones started from a terminal), or by how often you start them from the menu bar */
+  "startOrder": "recent" | "frequent"
 }
 }
 

@@ -10,7 +10,7 @@ import {
   showHUD,
   updateCommandMetadata,
 } from "@raycast/api";
-import { useLocalStorage } from "@raycast/utils";
+import { useFrecencySorting, useLocalStorage } from "@raycast/utils";
 import * as os from "node:os";
 import * as path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -323,16 +323,31 @@ export default function Command() {
     [recents, runningCwds],
   );
 
-  // The six rows the Start section will actually render: the projects that
-  // ran most recently, newest first. This used to be frecency-ranked, which
-  // put anything ever clicked here above everything never clicked, so a
-  // project you ran an hour ago from a terminal could sit below six you
-  // started from this menu last month and never show at all. The subtitle rule
-  // below judges ambiguity against these rows, not the full recents list, so a
-  // twin that fell off the end of the list can't confuse anyone.
+  // Start-click history, kept whichever order is chosen below, so switching
+  // to "Most started" later ranks by real history instead of starting cold.
+  const { data: byFrequency, visitItem } = useFrecencySorting(
+    startableRecents,
+    {
+      namespace: "project-starts",
+      key: (item) => item.cwd,
+      sortUnvisited: (a, b) => b.lastSeen - a.lastSeen,
+    },
+  );
+
+  // The six rows the Start section will actually render, in the order the
+  // user picked. "recent" (the default) is the projects that ran most
+  // recently, newest first: it surfaces what you were just working on,
+  // including a project started from a terminal. "frequent" ranks by how
+  // often and how lately each was started from this menu, which keeps
+  // regulars pinned but lets a project that only ever runs from a terminal
+  // fall off the end; that is why it is not the default. The subtitle rule
+  // below judges ambiguity against these rows, not the full recents list, so
+  // a twin that fell off the end of the list can't confuse anyone.
+  const startOrder = prefs.startOrder ?? "recent";
   const visibleRecents = useMemo(
-    () => startableRecents.slice(0, 6),
-    [startableRecents],
+    () =>
+      (startOrder === "frequent" ? byFrequency : startableRecents).slice(0, 6),
+    [startOrder, byFrequency, startableRecents],
   );
   // Subtitle per Start row, set only when the project name alone is
   // ambiguous. Same-named rows are usually worktrees of one repo, so the
@@ -571,7 +586,10 @@ export default function Command() {
                 )
               }
               onAction={() => {
-                stayLoadedWhile(() => launchRecent(recent));
+                stayLoadedWhile(async () => {
+                  await visitItem(recent);
+                  await launchRecent(recent);
+                });
               }}
             />
           ))}
