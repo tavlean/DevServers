@@ -386,6 +386,8 @@ function detectShopifyTool(command: string): ShopifyTool | null {
 // listens": Homebrew services, Docker, language servers and the like never
 // match a shape here, and that is what keeps the list a list of dev servers.
 function isCandidate(proc: RawProcess): boolean {
+  if (commandBase(proc.command.split(/\s+/, 1)[0]) === "next-server")
+    return true;
   if (/node_modules\//.test(proc.command)) return true;
   if (detectShopifyTool(proc.command)) return true;
   // Everything below only ever matches when the executable is one of a small
@@ -691,6 +693,8 @@ function packageFromModulesPath(token: string): string | null {
 }
 
 function detectToolFromCommand(command: string, cwd: string): string {
+  if (commandBase(command.split(/\s+/, 1)[0]) === "next-server") return "next";
+
   const shopifyTool = detectShopifyTool(command);
   if (shopifyTool) return shopifyTool;
 
