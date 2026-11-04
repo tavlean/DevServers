@@ -1363,6 +1363,104 @@ export function canPlanStart(cwd: string): boolean {
   return planSpawn(cwd) !== null;
 }
 
+// ---------------------------------------------------------------------------
+// Dependency install
+// ---------------------------------------------------------------------------
+//
+// A Node project whose node_modules folder is gone (deleted to free space, a
+// fresh clone, a worktree nobody installed) cannot start: `npm run dev` finds
+// the script and then dies on "vite: command not found". Nothing about how we
+// launch it can help, so the start flow checks for this up front and offers
+// to install first instead of failing 15 seconds later with nothing to say.
+
+// Where an install for this project runs, and with which package manager. A
+// workspace package keeps its lockfile (and usually its node_modules) at the
+// workspace root, so the install belongs there: `npm install` inside a pnpm
+// workspace's package would build a second, wrong tree. The nearest folder
+// holding a lockfile wins, searched up to the repository root; with none, the
+// project folder and npm.
+export interface InstallPlan {
+  pm: PackageManager;
+  dir: string;
+}
+
+const LOCKFILES = [
+  "bun.lockb",
+  "bun.lock",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "package-lock.json",
+];
+
+// The folders an install check walks: the project, then each parent up to and
+// including the repository root (the first folder holding `.git`). Never the
+// home folder or the filesystem root, where a stray node_modules or lockfile
+// belongs to nothing in particular.
+function projectAncestors(cwd: string): string[] {
+  const home = os.homedir();
+  const out: string[] = [];
+  let dir = cwd;
+  for (;;) {
+    if (dir === home || path.dirname(dir) === dir) break;
+    out.push(dir);
+    if (fs.existsSync(path.join(dir, ".git"))) break;
+    dir = path.dirname(dir);
+  }
+  return out;
+}
+
+export function installPlanFor(cwd: string): InstallPlan {
+  for (const dir of projectAncestors(cwd)) {
+    if (LOCKFILES.some((f) => fs.existsSync(path.join(dir, f)))) {
+      return { pm: detectPackageManager(dir), dir };
+    }
+  }
+  return { pm: detectPackageManager(cwd), dir: cwd };
+}
+
+function hasInstalledTree(dir: string): boolean {
+  // Yarn Plug'n'Play installs without a node_modules folder at all.
+  if (fs.existsSync(path.join(dir, ".pnp.cjs"))) return true;
+  try {
+    // An empty folder is what some cleanup tools leave behind.
+    return fs.readdirSync(path.join(dir, "node_modules")).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// The install this project needs before it can start, or null when it needs
+// none: not started through a package.json script (a bare Shopify theme), no
+// dependencies declared, or an installed tree in the project or any folder up
+// to its repository root (hoisted workspaces install at the root). Sync and
+// cheap: one package.json read and a few stats.
+export function missingDependencies(cwd: string): InstallPlan | null {
+  if (!pickDevScript(cwd)) return null;
+  let pkg: { dependencies?: unknown; devDependencies?: unknown };
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  const declares = (deps: unknown) =>
+    typeof deps === "object" && deps !== null && Object.keys(deps).length > 0;
+  if (!declares(pkg.dependencies) && !declares(pkg.devDependencies)) {
+    return null;
+  }
+  if (projectAncestors(cwd).some(hasInstalledTree)) return null;
+  return installPlanFor(cwd);
+}
+
+// Lines the install wrapper writes into the spawn log around the install, so
+// a failed row can tell an install that broke from a dev server that broke
+// after a good install (see diagnoseSpawnFailure in the dashboard).
+export const INSTALL_DONE_MARKER = "[Dev Servers] Dependencies installed.";
+// Printed when the install exits non-zero. The dashboard watches for it so a
+// broken install fails its row in seconds rather than at the end of the
+// install's generous window.
+export const INSTALL_FAILED_MARKER =
+  "[Dev Servers] Installing dependencies failed.";
+
 function planSpawn(cwd: string): { cmd: string; args: string[] } | null {
   const script = pickDevScript(cwd);
   if (script) {
@@ -1478,6 +1576,7 @@ async function pickShopifyThemePort(): Promise<number | null> {
 export async function startDevServer(
   cwd: string,
   replay?: string,
+  options: { install?: InstallPlan } = {},
 ): Promise<void> {
   // Clear anything the project's last run left behind before adding to it.
   // Helpers outlive the server that spawned them, so a project killed hours
@@ -1497,7 +1596,28 @@ export async function startDevServer(
   // Positional args in both forms, so zsh re-quotes them (see below). For a
   // replay the executable is simply the first token.
   const argv = plan.cmd ? [plan.cmd, ...plan.args] : plan.args;
-  const shellArgs = ["-ilc", 'exec "$0" "$@"', ...argv];
+  // With an install, the same shell runs it first, in the install's own folder
+  // (a workspace root, possibly), and goes on to the dev server only if it
+  // succeeded. Same positional discipline as the plain form: the folder and
+  // the package manager arrive as $1 and $2 and are shifted off before the
+  // dev command is exec'd, so nothing is spliced into the script text. The
+  // marker lines land in the spawn log, where they tell a failed install
+  // apart from a server that failed after a good one.
+  const install = options.install;
+  const shellArgs = install
+    ? [
+        "-ilc",
+        'print -r -- "[Dev Servers] Installing dependencies: $2 install in $1"' +
+          ' && { (cd -- "$1" && "$2" install) ||' +
+          ` { print -r -- ${JSON.stringify(INSTALL_FAILED_MARKER)}; exit 1; } }` +
+          ` && print -r -- ${JSON.stringify(INSTALL_DONE_MARKER)}` +
+          ' && shift 2 && exec "$@"',
+        "dev-servers",
+        install.dir,
+        install.pm,
+        ...argv,
+      ]
+    : ["-ilc", 'exec "$0" "$@"', ...argv];
   // Theme spawns export a pre-picked port when the CLI default is taken;
   // see the port-fallback section above. Applies to bare theme roots and to
   // themes wrapping `shopify theme dev` in a dev script alike.

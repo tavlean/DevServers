@@ -40,6 +40,7 @@ import {
   findProjectRoot,
   isShopifyAppRoot,
   isShopifyThemeRoot,
+  missingDependencies,
 } from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
@@ -268,6 +269,8 @@ async function chooseFolderAndStart(options: {
 interface RowProps {
   recent: RecentProject;
   framework?: string;
+  // No node_modules: starting will offer to install first.
+  needsInstall: boolean;
   terminalApp: Application;
   editorApp?: Application;
   autoOpen: boolean;
@@ -277,6 +280,7 @@ interface RowProps {
 function RecentRow({
   recent,
   framework,
+  needsInstall,
   terminalApp,
   editorApp,
   autoOpen,
@@ -304,6 +308,17 @@ function RecentRow({
   }
 
   const accessories: List.Item.Accessory[] = [
+    // Said here, before the start, so a project whose node_modules was
+    // cleaned away is not a surprise: starting it asks to install first.
+    ...(needsInstall
+      ? [
+          {
+            tag: { value: "Not installed", color: Color.Orange },
+            tooltip:
+              "No node_modules folder. Starting will offer to install dependencies first.",
+          },
+        ]
+      : []),
     {
       text: formatLastSeen(recent.lastSeen),
       tooltip: `Last seen ${new Date(recent.lastSeen).toLocaleString()}`,
@@ -519,6 +534,19 @@ function PickerView({
     { keepPreviousData: true, initialData: {} },
   );
 
+  // Which recents have no installed dependencies. Off the render path for the
+  // same reason as the framework tags: it reads each package.json.
+  const { data: needsInstallList } = useCachedPromise(
+    async (cwds: string[]): Promise<string[]> =>
+      cwds.filter((cwd) => missingDependencies(cwd) !== null),
+    [recentCwds],
+    { keepPreviousData: true, initialData: [] },
+  );
+  const needsInstall = useMemo(
+    () => new Set(needsInstallList),
+    [needsInstallList],
+  );
+
   // Hide entries that are currently running (the dashboard owns them) or
   // whose folder no longer exists on disk. We keep them in storage so a
   // remounted external drive or stopped server reappears.
@@ -591,6 +619,7 @@ function PickerView({
               key={r.cwd}
               recent={r}
               framework={frameworkByCwd[r.cwd]}
+              needsInstall={needsInstall.has(r.cwd)}
               terminalApp={terminalApp}
               editorApp={editorApp}
               autoOpen={autoOpen}
