@@ -10,7 +10,7 @@ import {
   showHUD,
   updateCommandMetadata,
 } from "@raycast/api";
-import { useFrecencySorting, useLocalStorage } from "@raycast/utils";
+import { useLocalStorage } from "@raycast/utils";
 import * as os from "node:os";
 import * as path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -323,21 +323,16 @@ export default function Command() {
     [recents, runningCwds],
   );
 
-  const { data: sortedRecents, visitItem } = useFrecencySorting(
-    startableRecents,
-    {
-      namespace: "project-starts",
-      key: (item) => item.cwd,
-      sortUnvisited: (a, b) => b.lastSeen - a.lastSeen,
-    },
-  );
-
-  // The six rows the Start section will actually render; the subtitle rule
-  // below judges ambiguity against these, not the full recents list — a
+  // The six rows the Start section will actually render: the projects that
+  // ran most recently, newest first. This used to be frecency-ranked, which
+  // put anything ever clicked here above everything never clicked, so a
+  // project you ran an hour ago from a terminal could sit below six you
+  // started from this menu last month and never show at all. The subtitle rule
+  // below judges ambiguity against these rows, not the full recents list, so a
   // twin that fell off the end of the list can't confuse anyone.
   const visibleRecents = useMemo(
-    () => sortedRecents.slice(0, 6),
-    [sortedRecents],
+    () => startableRecents.slice(0, 6),
+    [startableRecents],
   );
   // Subtitle per Start row, set only when the project name alone is
   // ambiguous. Same-named rows are usually worktrees of one repo, so the
@@ -576,10 +571,7 @@ export default function Command() {
                 )
               }
               onAction={() => {
-                stayLoadedWhile(async () => {
-                  await visitItem(recent);
-                  await launchRecent(recent);
-                });
+                stayLoadedWhile(() => launchRecent(recent));
               }}
             />
           ))}
