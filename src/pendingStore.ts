@@ -2,6 +2,18 @@ import { LocalStorage } from "@raycast/api";
 
 const PENDING_KEY = "pending-starts";
 
+// How long a spawned server gets to bind a port before the watchdog calls it
+// failed. Also spelled into the undiagnosed failed-row title, so the number
+// the user reads always matches the wait they actually got.
+export const SPAWN_TIMEOUT_MS = 15000;
+
+// The same watchdog for a start that installs dependencies first. A cold
+// install of a large project on a slow connection runs to minutes, and a
+// failed install ends the process early anyway, so the long window costs
+// nothing when things go wrong and keeps a slow install from being called a
+// failure while it is still downloading.
+export const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
 // Spawn failures worth naming on a failed row. Both read as "the extension
 // broke" while the real cause, and the fix, sit outside the extension
 // entirely, so the generic "check the startup log" wastes the user's time on a

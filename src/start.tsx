@@ -27,6 +27,7 @@ import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { promisify } from "node:util";
 import { DEFAULT_TERMINAL } from "./constants";
+import { LOGIN_KEY, LoginProject, toggleStartAtLogin } from "./loginStarts";
 import {
   RecentProject,
   STORAGE_KEY,
@@ -274,6 +275,9 @@ interface RowProps {
   terminalApp: Application;
   editorApp?: Application;
   autoOpen: boolean;
+  // Marked to start when the Mac starts.
+  atLogin: boolean;
+  onToggleLogin: () => void;
   onRemove: (cwd: string) => Promise<void>;
 }
 
@@ -284,6 +288,8 @@ function RecentRow({
   terminalApp,
   editorApp,
   autoOpen,
+  atLogin,
+  onToggleLogin,
   onRemove,
 }: RowProps) {
   async function start() {
@@ -308,6 +314,9 @@ function RecentRow({
   }
 
   const accessories: List.Item.Accessory[] = [
+    // The dashboard's mark for the same thing; its Start at Login section
+    // lists them all.
+    ...(atLogin ? [{ icon: Icon.Power, tooltip: "Starts at login" }] : []),
     // Said here, before the start, so a project whose node_modules was
     // cleaned away is not a surprise: starting it asks to install first.
     ...(needsInstall
@@ -381,6 +390,16 @@ function RecentRow({
               title="Copy Path"
               content={recent.cwd}
               shortcut={{ modifiers: ["cmd"], key: "c" }}
+            />
+          </ActionPanel.Section>
+          <ActionPanel.Section>
+            {/* Below the open actions so it never lands on ⌘↵, which Raycast
+                binds to the second action. */}
+            <Action
+              title={atLogin ? "Don't Start at Login" : "Start at Login"}
+              icon={Icon.Power}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "l" }}
+              onAction={onToggleLogin}
             />
           </ActionPanel.Section>
           <ActionPanel.Section>
@@ -579,6 +598,13 @@ function PickerView({
     await setRecents(await removeRecent(targetCwd));
   }
 
+  const { value: loginProjects = [], setValue: setLoginProjects } =
+    useLocalStorage<LoginProject[]>(LOGIN_KEY, []);
+  const loginCwds = useMemo(
+    () => new Set(loginProjects.map((p) => canonicalCwd(p.cwd))),
+    [loginProjects],
+  );
+
   const isLoading = isLoadingRecents || isLoadingRunning;
   const hasRecents = visible.length > 0;
 
@@ -623,6 +649,14 @@ function PickerView({
               terminalApp={terminalApp}
               editorApp={editorApp}
               autoOpen={autoOpen}
+              atLogin={loginCwds.has(canonicalCwd(r.cwd))}
+              onToggleLogin={() =>
+                void toggleStartAtLogin(
+                  { cwd: r.cwd, projectName: r.projectName },
+                  !loginCwds.has(canonicalCwd(r.cwd)),
+                  setLoginProjects,
+                )
+              }
               onRemove={handleRemove}
             />
           ))}

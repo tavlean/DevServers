@@ -15,6 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
+import { startLoginProjectsAfterBoot } from "./loginStarts";
 import { readPendingStarts } from "./pendingStore";
 import { RecentProject, STORAGE_KEY, recordRunning } from "./recents";
 import {
@@ -272,6 +273,10 @@ export default function Command() {
 
   useEffect(() => {
     refresh()
+      // The first refresh after a restart starts the projects marked to start
+      // at login (once per boot; see loginStarts). Inside the loading window
+      // because a background launch lives only while isLoading holds.
+      .then((next) => startLoginProjectsAfterBoot(next))
       .catch(() => {})
       .finally(() => setIsLoading(false));
   }, [refresh]);
