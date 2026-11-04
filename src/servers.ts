@@ -7,7 +7,31 @@ import { promisify } from "node:util";
 import { fetchAliases } from "./aliases";
 import { DevServer, Runtime } from "./types";
 
-const execFileAsync = promisify(execFile);
+const execFileRaw = promisify(execFile);
+
+// Every inspection command runs under a deadline and a generous buffer. ps,
+// lsof and git normally answer in milliseconds, but lsof can stall on a
+// sleeping network volume and git on a FUSE or iCloud folder, and with no
+// deadline one stuck child froze the whole list (and kept the menu bar
+// spinning) until it gave up on its own, which it might never do. On a
+// timeout the child is killed and the error carries whatever it printed, which
+// stdoutOrThrow salvages where a partial answer is still useful. The buffer is
+// sized for `ps -A -ww` on a busy machine: Node's 1 MB default is within reach
+// of a few hundred long command lines.
+const EXEC_TIMEOUT_MS = 10_000;
+const EXEC_MAX_BUFFER = 32 * 1024 * 1024;
+
+function execFileAsync(
+  file: string,
+  args: string[],
+  options: { timeout?: number } = {},
+): Promise<{ stdout: string; stderr: string }> {
+  return execFileRaw(file, args, {
+    timeout: options.timeout ?? EXEC_TIMEOUT_MS,
+    maxBuffer: EXEC_MAX_BUFFER,
+    encoding: "utf8",
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Platform primitives
@@ -229,16 +253,22 @@ interface GitProbe {
 // spawn per call; callers should go through getGitInfoCached.
 async function probeGit(cwd: string): Promise<GitProbe> {
   try {
-    const { stdout } = await execFileAsync("git", [
-      "-C",
-      cwd,
-      "rev-parse",
-      "--git-common-dir",
-      "--abbrev-ref",
-      "HEAD",
-      "--git-path",
-      "HEAD",
-    ]);
+    const { stdout } = await execFileAsync(
+      "git",
+      [
+        "-C",
+        cwd,
+        "rev-parse",
+        "--git-common-dir",
+        "--abbrev-ref",
+        "HEAD",
+        "--git-path",
+        "HEAD",
+      ],
+      // Short: a branch tag is cosmetic, and a repo that cannot answer in
+      // this long is not worth holding the whole list for.
+      { timeout: 3_000 },
+    );
     // rev-parse prints one line per request, in argument order.
     const [commonDirRaw, branchRaw, headRaw] = stdout.trim().split("\n");
     if (!commonDirRaw) return { info: undefined };

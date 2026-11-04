@@ -14,6 +14,7 @@ import {
   getPreferenceValues,
   getSelectedFinderItems,
   launchCommand,
+  Keyboard,
 } from "@raycast/api";
 import {
   showFailureToast,
@@ -33,6 +34,7 @@ import {
   removeRecent,
 } from "./recents";
 import {
+  canonicalCwd,
   directoryExists,
   fetchServers,
   findProjectRoot,
@@ -346,7 +348,7 @@ function RecentRow({
                 icon={Icon.Code}
                 target={recent.cwd}
                 application={editorApp}
-                shortcut={{ modifiers: ["cmd"], key: "e" }}
+                shortcut={Keyboard.Shortcut.Common.Edit}
               />
             )}
             <Action.Open
@@ -487,7 +489,10 @@ function PickerView({
 
   const runningByCwd = useMemo(() => {
     const m = new Map<string, DevServer>();
-    for (const s of running) m.set(s.cwd, s);
+    // Canonical on both sides: recents are stored canonical, and a server's
+    // cwd is whatever lsof reported, so a symlinked path would otherwise keep
+    // a running project in the list of things to start.
+    for (const s of running) m.set(canonicalCwd(s.cwd), s);
     return m;
   }, [running]);
 
@@ -528,7 +533,9 @@ function PickerView({
   // favors no flash over shaving microseconds.
   const visible = useMemo(() => {
     return (recents ?? [])
-      .filter((r) => !runningByCwd.has(r.cwd) && directoryExists(r.cwd))
+      .filter(
+        (r) => !runningByCwd.has(canonicalCwd(r.cwd)) && directoryExists(r.cwd),
+      )
       .sort((a, b) => b.lastSeen - a.lastSeen);
   }, [recents, runningByCwd]);
 

@@ -18,6 +18,7 @@ import {
   openExtensionPreferences,
   showToast,
   useNavigation,
+  Keyboard,
 } from "@raycast/api";
 import { showFailureToast, useCachedPromise } from "@raycast/utils";
 import * as fs from "node:fs";
@@ -31,17 +32,11 @@ import {
   readPendingStarts,
   writePendingStarts,
 } from "./pendingStore";
-import {
-  recordSeen,
-  recordSeenBatch,
-  toRecent,
-  updateRecentFavicon,
-} from "./recents";
+import { recordRunning, recordSeen, updateRecentFavicon } from "./recents";
 import {
   EPHEMERAL_PORT_MIN,
   byRecency,
   fetchServers,
-  canPlanStart,
   killProcess,
   killServer,
   restartReplay,
@@ -245,14 +240,14 @@ function SpawnLogView({
             title="Copy Log Path"
             icon={Icon.Clipboard}
             content={logPath}
-            shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
+            shortcut={Keyboard.Shortcut.Common.Copy}
           />
           {exists && <Action.ShowInFinder path={logPath} />}
           <Action
             title="Refresh"
             icon={Icon.ArrowClockwise}
             onAction={revalidate}
-            shortcut={{ modifiers: ["cmd"], key: "r" }}
+            shortcut={Keyboard.Shortcut.Common.Refresh}
           />
         </ActionPanel>
       }
@@ -453,7 +448,7 @@ function ServerItem({
               <Action.CopyToClipboard
                 title="Copy Localhost URL"
                 content={server.localUrl}
-                shortcut={{ modifiers: ["cmd", "shift"], key: "c" }}
+                shortcut={Keyboard.Shortcut.Common.Copy}
               />
             )}
             {/* Network URL is for testing on a phone or another machine on
@@ -463,7 +458,7 @@ function ServerItem({
               <Action.CopyToClipboard
                 title="Copy Network URL"
                 content={`http://${lanIp}:${server.port}`}
-                shortcut={{ modifiers: ["cmd", "opt"], key: "c" }}
+                shortcut={Keyboard.Shortcut.Common.CopyName}
               />
             )}
             <Action.CopyToClipboard
@@ -479,7 +474,7 @@ function ServerItem({
                 icon={Icon.Code}
                 target={server.cwd}
                 application={editorApp}
-                shortcut={{ modifiers: ["cmd"], key: "e" }}
+                shortcut={Keyboard.Shortcut.Common.Edit}
               />
             )}
             <Action.Open
@@ -496,7 +491,7 @@ function ServerItem({
             <Action
               title="Start Dev Server"
               icon={Icon.Play}
-              shortcut={{ modifiers: ["cmd"], key: "n" }}
+              shortcut={Keyboard.Shortcut.Common.New}
               onAction={openStartCommand}
             />
             <Action
@@ -512,7 +507,7 @@ function ServerItem({
             <Action
               title="Refresh"
               icon={Icon.ArrowClockwise}
-              shortcut={{ modifiers: ["cmd"], key: "r" }}
+              shortcut={Keyboard.Shortcut.Common.Refresh}
               onAction={onRefresh}
             />
           </ActionPanel.Section>
@@ -807,69 +802,25 @@ function pendingRowId(cwd: string): string {
   return `${PENDING_ID_PREFIX}${cwd}`;
 }
 
-// Spinner timing. Smoothness is the size of each step, not the frame rate, so
-// the two knobs pull apart: 18 frames over a revolution is a 20 degree step
-// against the 30 degrees a 12-frame turn moved, and holding the frame rate
-// steady spends that on a slower turn (810ms) rather than a choppier one.
-// Slower also lands nearer the animated toast's spinner, which the 600ms
-// version overshot.
-//
-// The frame rate itself is near its ceiling. Each frame costs one prop change
-// on one row, the frames are precomputed (see SPINNER_ICONS), and the interval
-// only runs while something is actually starting, so it is bounded by the 15s
-// watchdog. But every frame is still a render round trip to Raycast, and the
-// toast's own spinner is native and far smoother than anything reachable from
-// here. Buy smoothness with degrees per step first; raise the rate only after
-// that runs out.
-const SPINNER_FRAMES = 18;
-const SPINNER_FRAME_MS = 45;
-// Neutral gray, readable on both the light and the dark theme. Hardcoded
-// rather than tinted or drawn in currentColor: Raycast gives a data-URI SVG
-// no surrounding color context, so a currentColor-only icon renders as a
-// black square (the same trap isMonochromeSvg exists to dodge for favicons).
-const SPINNER_COLOR = "#8E8E93";
-const SPINNER_RADIUS = 5.5;
-// Quarter of the circle is the moving head; the rest is the gap that rides
-// around behind it.
-const SPINNER_ARC = 2 * Math.PI * SPINNER_RADIUS * 0.25;
-const SPINNER_GAP = 2 * Math.PI * SPINNER_RADIUS - SPINNER_ARC;
+// Icon for a row whose server is still on its way up. Static on purpose.
+// This used to be a hand-rolled spinner: eighteen SVG frames swapped on the
+// row every 45ms, since Raycast has no animated icons. Raycast 2 renders an
+// extension's tree with React in its own window, and that many icon changes a
+// second on one row drove its renderer past React's update-depth limit within
+// a few seconds of every start ("Minified React error #185"), which replaced
+// the dashboard with an error screen. The motion now comes from the list's
+// own loading bar (see `isLoading` on the List), which is native, smooth, and
+// costs nothing per frame.
+const PENDING_ICON: Image.ImageLike = {
+  source: Icon.CircleProgress50,
+  tintColor: Color.SecondaryText,
+};
 
-// One frame of a buffering spinner, as an SVG data URI. Raycast has no
-// animated icons and no per-row loading state, so the animation is frames we
-// swap ourselves: a faint full-circle track with a quarter-circle arc stepped
-// around it one frame at a time, which is the same shape a CSS spinner draws
-// with stroke-dasharray.
-function spinnerFrame(frame: number): string {
-  const angle = frame * (360 / SPINNER_FRAMES);
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">` +
-    `<g fill="none" stroke="${SPINNER_COLOR}" stroke-width="1.8" stroke-linecap="round">` +
-    `<circle cx="8" cy="8" r="${SPINNER_RADIUS}" opacity="0.22"/>` +
-    `<circle cx="8" cy="8" r="${SPINNER_RADIUS}"` +
-    ` stroke-dasharray="${SPINNER_ARC.toFixed(2)} ${SPINNER_GAP.toFixed(2)}"` +
-    ` transform="rotate(${angle} 8 8)"/>` +
-    `</g></svg>`;
-  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
-}
-
-// The frames are a fixed set, so build them once at module load instead of
-// re-encoding an SVG twenty times a second. Leaves the animation as an array
-// index, which is what keeps the frame rate cheap enough to raise.
-const SPINNER_ICONS: readonly string[] = Array.from(
-  { length: SPINNER_FRAMES },
-  (_, frame) => spinnerFrame(frame),
-);
-
-// The synthetic row for a pending start. While starting it spins; once the
-// watchdog gives up it turns red and carries the remedies. A row can do that
-// and a toast cannot: a toast's actions die with it, and it degrades to an
-// actionless HUD as soon as the Raycast window closes, which is exactly when
-// a 15-second failure lands.
-//
-// The spinner's frame counter lives here rather than in the dashboard so that
-// ten re-renders a second stay inside this one row. Hoisting it would re-run
-// the whole list, which is the churn sameServers and the polling cadence were
-// both written to avoid.
+// The synthetic row for a pending start. While starting it shows the pending
+// icon (and the list shows its loading bar); once the watchdog gives up it
+// turns red and carries the remedies. A row can do that and a toast cannot: a
+// toast's actions die with it, and it degrades to an actionless HUD as soon as
+// the Raycast window closes, which is exactly when a 15-second failure lands.
 function PendingItem({
   id,
   cwd,
@@ -895,16 +846,7 @@ function PendingItem({
   onRefresh: () => void;
 }) {
   const { push } = useNavigation();
-  const [frame, setFrame] = useState(0);
   const spinning = entry.status === "starting";
-  useEffect(() => {
-    if (!spinning) return;
-    const id = setInterval(
-      () => setFrame((f) => (f + 1) % SPINNER_FRAMES),
-      SPINNER_FRAME_MS,
-    );
-    return () => clearInterval(id);
-  }, [spinning]);
 
   // The project actions, identical on both states and on the same chords
   // server rows use. A pending row is still a row about a folder: leaving it
@@ -919,7 +861,7 @@ function PendingItem({
           icon={Icon.Code}
           target={cwd}
           application={editorApp}
-          shortcut={{ modifiers: ["cmd"], key: "e" }}
+          shortcut={Keyboard.Shortcut.Common.Edit}
         />
       )}
       <Action.Open
@@ -936,13 +878,13 @@ function PendingItem({
       <Action
         title="Start Dev Server"
         icon={Icon.Play}
-        shortcut={{ modifiers: ["cmd"], key: "n" }}
+        shortcut={Keyboard.Shortcut.Common.New}
         onAction={openStartCommand}
       />
       <Action
         title="Refresh"
         icon={Icon.ArrowClockwise}
-        shortcut={{ modifiers: ["cmd"], key: "r" }}
+        shortcut={Keyboard.Shortcut.Common.Refresh}
         onAction={onRefresh}
       />
     </ActionPanel.Section>
@@ -952,7 +894,7 @@ function PendingItem({
     return (
       <List.Item
         id={id}
-        icon={SPINNER_ICONS[frame]}
+        icon={PENDING_ICON}
         // The section header is already the project name, so the row says
         // what is happening instead of repeating it. Server rows title on
         // their host and port; a row with no port yet has its state to give.
@@ -1782,22 +1724,13 @@ export default function Command(
     return () => clearTimeout(timer);
   }, [pendingStarts]);
 
-  // Every observed server feeds the recents store, so the Start Recent
-  // Dev Server picker has an up-to-date list of projects without the user
-  // having to bookmark anything explicitly. Dedup by cwd within a single
-  // tick so multi-server projects don't write themselves multiple times.
+  // Every observed server feeds the recents store, so the Start picker and
+  // the menu bar have an up-to-date list of projects without the user having
+  // to bookmark anything. recordRunning skips folders it could not start
+  // cold, and skips the write entirely when nothing has moved.
   useEffect(() => {
     if (servers.length === 0) return;
-    const byCwd = new Map<string, ReturnType<typeof toRecent>>();
-    for (const s of servers) {
-      // A recent is a promise the Start picker can start it. A folder with
-      // nothing to plan from (a `python -m http.server` in ~/Docs, a Rails
-      // app) is a running server, not a startable project, so it stays out.
-      if (!byCwd.has(s.cwd) && canPlanStart(s.cwd)) {
-        byCwd.set(s.cwd, toRecent(s));
-      }
-    }
-    recordSeenBatch([...byCwd.values()]).catch(() => {
+    recordRunning(servers).catch(() => {
       // Recents are a best-effort enhancement; a write failure must not
       // disrupt the dashboard, so swallow.
     });
@@ -2150,10 +2083,15 @@ export default function Command(
       ? resolvingServer(selectedPendingCwd, selectedPendingEntry, servers)
       : undefined;
   const effectiveSelectedItemId = landed ? String(landed.pid) : selectedItemId;
+  // The list's loading bar stands in for the old row spinner: it runs while
+  // any start or restart on screen is still waiting for its port.
+  const anyStarting = visiblePending.some(
+    ([, entry]) => entry.status === "starting",
+  );
 
   return (
     <List
-      isLoading={effectiveLoading}
+      isLoading={effectiveLoading || anyStarting}
       searchBarPlaceholder="Filter servers..."
       // Search still filters natively, but the Starting section stays put:
       // a start in flight is the thing the user is waiting on, so a query
@@ -2197,13 +2135,13 @@ export default function Command(
                 <Action
                   title="Start Dev Server"
                   icon={Icon.Play}
-                  shortcut={{ modifiers: ["cmd"], key: "n" }}
+                  shortcut={Keyboard.Shortcut.Common.New}
                   onAction={openStartCommand}
                 />
                 <Action
                   title="Refresh"
                   icon={Icon.ArrowClockwise}
-                  shortcut={{ modifiers: ["cmd"], key: "r" }}
+                  shortcut={Keyboard.Shortcut.Common.Refresh}
                   onAction={refresh}
                 />
                 <Action

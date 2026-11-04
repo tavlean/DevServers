@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
 import { readPendingStarts } from "./pendingStore";
-import { RecentProject, STORAGE_KEY } from "./recents";
+import { RecentProject, STORAGE_KEY, recordRunning } from "./recents";
 import {
   byRecency,
   canonicalCwd,
@@ -207,15 +207,20 @@ async function launchRecent(recent: RecentProject): Promise<void> {
   });
 }
 
+// One empty list for the whole module. A `= []` default in the destructure
+// below made a new array on every render while storage was still loading,
+// which changed every memo keyed on it each time.
+const NO_RECENTS: RecentProject[] = [];
+
 export default function Command() {
   const prefs = getPreferenceValues<Preferences.Menubar>();
   const [servers, setServers] = useState<DevServer[]>(
     () => readSnapshot() ?? [],
   );
   const [isLoading, setIsLoading] = useState(true);
-  const { value: recents = [] } = useLocalStorage<RecentProject[]>(
+  const { value: recents = NO_RECENTS } = useLocalStorage<RecentProject[]>(
     STORAGE_KEY,
-    [],
+    NO_RECENTS,
   );
 
   // Raycast unloads a menu bar command shortly after its menu closes, and
@@ -258,6 +263,10 @@ export default function Command() {
     setServers(next);
     writeSnapshot(next);
     await updateCommandMetadata({ subtitle: metadataSubtitle(next.length) });
+    // This refresh also runs in the background every minute, which makes the
+    // menu bar the one surface that sees projects started from a terminal
+    // while the dashboard is closed. Best-effort, like every recents write.
+    await recordRunning(next).catch(() => {});
     return next;
   }, []);
 
