@@ -3,7 +3,7 @@
 ## [Start projects at login] - {PR_MERGE_DATE}
 
 - **Pick projects to start when your Mac starts.** Choose **Start at Login** (`⌘⇧L`) on a project in the dashboard or the Start picker, and after the next restart its dev server starts on its own, installing dependencies first if they are missing. The menu bar item does the starting on its first refresh after a restart, so it needs to be enabled. A project already running, or whose folder is gone, is skipped.
-- **One place to see what starts at login.** The dashboard has a **Start at Login** section listing every such project, whether it is running, and an action to start it now or turn it off. Rows for these projects in the dashboard and the Start picker carry a power icon.
+- **One place to see what starts at login.** **Start Dev Server** has a **Start at Login** section below the recent projects, listing every such project, whether it is running, and an action to start it now or turn it off. Rows for these projects in the dashboard and the recents carry a power icon.
 - A start at login that fails shows up in the dashboard as a failed row, with the cause and the startup log, like any other start.
 
 ## [Raycast 2 crash fix, recents that keep up, dev servers outside the JS world] - 2026-11-04

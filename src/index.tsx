@@ -400,7 +400,7 @@ function ServerItem({
       ].filter((v): v is string => Boolean(v))}
       accessories={[
         // The same mark the Start picker puts on these projects. The full
-        // list, running or not, is the Start at Login section below.
+        // list, running or not, is that picker's Start at Login section.
         ...(atLogin ? [{ icon: Icon.Power, tooltip: "Starts at login" }] : []),
         ...(show.uptime
           ? [
@@ -1113,87 +1113,6 @@ function PendingItem({
 // One empty list for the module, so a still-loading useLocalStorage does not
 // hand every memo keyed on it a new array each render.
 const NO_LOGIN_PROJECTS: LoginProject[] = [];
-
-function tildePath(p: string): string {
-  const home = os.homedir();
-  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-}
-
-// A row in the Start at Login section: the project, and whether it is up.
-function LoginProjectItem({
-  project,
-  running,
-  onRemove,
-}: {
-  project: LoginProject;
-  running: boolean;
-  onRemove: () => void;
-}) {
-  const exists = directoryExists(project.cwd);
-  const status: List.Item.Accessory = running
-    ? { tag: { value: "Running", color: Color.Green } }
-    : exists
-      ? { text: "Not running" }
-      : {
-          tag: { value: "Folder missing", color: Color.Red },
-          tooltip: "Skipped at login until the folder is back",
-        };
-  const start = () =>
-    launchCommand({
-      name: "index",
-      type: LaunchType.UserInitiated,
-      context: {
-        spawn: {
-          targets: [{ cwd: project.cwd, name: project.projectName }],
-          confirmMulti: false,
-          showAutoOpenHint: false,
-          requestId:
-            Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-        },
-      },
-    }).catch((err) =>
-      showFailureToast(err, { title: `Couldn't start ${project.projectName}` }),
-    );
-  return (
-    <List.Item
-      id={`login:${project.cwd}`}
-      icon={Icon.Power}
-      title={project.projectName}
-      subtitle={{ value: tildePath(project.cwd), tooltip: project.cwd }}
-      keywords={[project.cwd]}
-      accessories={[status]}
-      actions={
-        <ActionPanel>
-          {!running && exists && (
-            <Action
-              title="Start Dev Server"
-              icon={Icon.Play}
-              onAction={start}
-            />
-          )}
-          {exists && (
-            <ActionPanel.Section>
-              <Action.ShowInFinder
-                path={project.cwd}
-                shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
-              />
-              <Action.CopyToClipboard title="Copy Path" content={project.cwd} />
-            </ActionPanel.Section>
-          )}
-          {/* Last, so neither ↵ nor ⌘↵ can turn it off by accident. */}
-          <ActionPanel.Section>
-            <Action
-              title="Don't Start at Login"
-              icon={Icon.Power}
-              shortcut={{ modifiers: ["cmd", "shift"], key: "l" }}
-              onAction={onRemove}
-            />
-          </ActionPanel.Section>
-        </ActionPanel>
-      }
-    />
-  );
-}
 
 export default function Command(
   props: LaunchProps<{ launchContext?: DashboardLaunchContext }>,
@@ -2341,8 +2260,8 @@ export default function Command(
   const [toolFilter, setToolFilter] = useState<string>("all");
 
   // Projects marked to start when the Mac starts (the menu bar does the
-  // starting; see loginStarts). Read here for the row marks and the Start at
-  // Login section, which is the one place that lists all of them.
+  // starting; see loginStarts). Read here for the row marks; the full list
+  // lives in Start Dev Server, next to the recents.
   const {
     value: loginProjects = NO_LOGIN_PROJECTS,
     setValue: setLoginProjects,
@@ -2365,10 +2284,6 @@ export default function Command(
     }
     return { canonByCwd: canon, plannable: startable };
   }, [servers]);
-  const runningCanonCwds = useMemo(
-    () => new Set(canonByCwd.values()),
-    [canonByCwd],
-  );
 
   // Visibility prefs default to true so first-time users see everything.
   // Raycast returns `undefined` for an unset checkbox on first launch.
@@ -2637,26 +2552,6 @@ export default function Command(
           ))}
         </List.Section>
       ))}
-      {/* Every project marked to start at login, running or not, so the
-          answer to "what comes up when I restart?" is one glance. Hidden
-          under a tool filter, which is about running servers. */}
-      {toolFilter === "all" && loginProjects.length > 0 && (
-        <List.Section
-          title="Start at Login"
-          subtitle={`${loginProjects.length}`}
-        >
-          {loginProjects.map((project) => (
-            <LoginProjectItem
-              key={project.cwd}
-              project={project}
-              running={runningCanonCwds.has(canonicalCwd(project.cwd))}
-              onRemove={() =>
-                void toggleStartAtLogin(project, false, setLoginProjects)
-              }
-            />
-          ))}
-        </List.Section>
-      )}
     </List>
   );
 }
