@@ -1720,6 +1720,12 @@ export function spawnLogPath(cwd: string): string {
   return path.join(os.tmpdir(), `dev-servers-spawn-${cwdSlug(cwd)}.log`);
 }
 
+// A path with the home folder shortened to ~, for display.
+export function tildePath(p: string): string {
+  const home = os.homedir();
+  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
 // Size of the (append-mode) spawn log before an attempt writes to it. Taken
 // right before every spawn so the watchdog and the log view can scope
 // themselves to that attempt's bytes alone.

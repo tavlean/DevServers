@@ -4,7 +4,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   INSTALL_TIMEOUT_MS,
-  PendingStart,
   SPAWN_TIMEOUT_MS,
   readPendingStarts,
   writePendingStarts,
@@ -27,13 +26,17 @@ const execFileAsync = promisify(execFile);
 // you had not opened it in a month.
 export const LOGIN_KEY = "start-at-login";
 
-// The boot the menu bar last handled, as kern.boottime seconds.
+// The boot the menu bar last handled, as kern.bootsessionuuid.
 const BOOT_KEY = "last-handled-boot";
 
 export interface LoginProject {
   cwd: string; // canonical path
   projectName: string;
 }
+
+// One empty list for the module, so a still-loading useLocalStorage does not
+// hand every memo keyed on it a new array each render.
+export const NO_LOGIN_PROJECTS: LoginProject[] = [];
 
 export async function readLoginProjects(): Promise<LoginProject[]> {
   const raw = await LocalStorage.getItem<string>(LOGIN_KEY);
@@ -71,6 +74,14 @@ export function setStartAtLogin(
     const next = on
       ? [...rest, { cwd, projectName: project.projectName }]
       : rest;
+    // Record the current boot if the menu bar never has. Its first run only
+    // records a boot and starts nothing, so without this, marking a project
+    // before that first run would make the next restart look like a first
+    // run, and the project would not start until the restart after.
+    if (on && (await recordedBoot()) === undefined) {
+      const boot = await bootId();
+      if (boot !== null) await LocalStorage.setItem(BOOT_KEY, boot);
+    }
     await LocalStorage.setItem(LOGIN_KEY, JSON.stringify(next));
     return next;
   };
@@ -79,18 +90,27 @@ export function setStartAtLogin(
   return run;
 }
 
-// When the kernel booted, in epoch seconds, or null when it cannot be read.
-// kern.boottime rather than now minus uptime: it is one fixed number per boot,
-// so comparing it across runs needs no tolerance for clock drift.
-async function bootTime(): Promise<number | null> {
+// The boot on record, if any. Only a string counts: a development build
+// stored kern.boottime here as a number, and reading that as a different boot
+// would start every marked project at once.
+async function recordedBoot(): Promise<string | undefined> {
+  const value = await LocalStorage.getItem(BOOT_KEY);
+  return typeof value === "string" ? value : undefined;
+}
+
+// A UUID the kernel mints once per boot, or null when it cannot be read.
+// Not kern.boottime: macOS shifts that whenever the clock is stepped (an NTP
+// correction after a long sleep, a manual change), which would read as a new
+// boot and start the marked projects again in the middle of the day.
+async function bootId(): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
       "/usr/sbin/sysctl",
-      ["-n", "kern.boottime"],
+      ["-n", "kern.bootsessionuuid"],
       { timeout: 3_000 },
     );
-    const match = /sec = (\d+)/.exec(stdout);
-    return match ? Number(match[1]) : null;
+    const id = stdout.trim();
+    return id === "" ? null : id;
   } catch {
     return null;
   }
@@ -113,27 +133,30 @@ async function bootTime(): Promise<number | null> {
 export async function startLoginProjectsAfterBoot(
   running: DevServer[],
 ): Promise<void> {
-  const boot = await bootTime();
+  const boot = await bootId();
   if (boot === null) return;
-  const handled = await LocalStorage.getItem<number>(BOOT_KEY);
+  const handled = await recordedBoot();
   if (handled === boot) return;
-  // Claimed before any start, so a second menu bar run that overlaps this one
-  // (an interval refresh landing while the user opens the menu) sees the boot
-  // as handled and starts nothing twice.
+  // Claimed before any start, so a second menu bar run that begins after this
+  // write (an interval refresh landing while the user opens the menu) sees the
+  // boot as handled. Two runs inside the same storage round trip could still
+  // both get here; LocalStorage has no compare-and-set, so this narrows the
+  // window rather than closing it, and the running check below catches a
+  // second run that comes a moment later.
   await LocalStorage.setItem(BOOT_KEY, boot);
   // No boot on record means this is the first run of a version that has the
-  // feature, not a restart: nothing to catch up on.
+  // feature, and nobody has marked a project yet (marking one records the
+  // boot): nothing to catch up on.
   if (handled === undefined) return;
 
   const projects = await readLoginProjects();
   if (projects.length === 0) return;
   const runningCwds = new Set(running.map((s) => canonicalCwd(s.cwd)));
-  const started = new Map<string, PendingStart>();
   for (const project of projects) {
     const cwd = canonicalCwd(project.cwd);
-    // A deleted or unmounted folder is skipped rather than reported: it is
-    // likely gone on purpose, and the dashboard's Start at Login section says
-    // so the next time you look.
+    // A deleted or unmounted folder, or one with nothing to run, is skipped
+    // rather than reported: Start Dev Server's Start at Login section says so
+    // the next time you look.
     if (runningCwds.has(cwd) || !directoryExists(cwd) || !canPlanStart(cwd)) {
       continue;
     }
@@ -144,9 +167,14 @@ export async function startLoginProjectsAfterBoot(
     try {
       await startDevServer(cwd, undefined, { install });
     } catch {
+      // Nothing was spawned, so there is no log for a failed row to show.
       continue;
     }
-    started.set(cwd, {
+    // Written after each start rather than once at the end: Raycast can end
+    // a background run that goes on too long, and a start whose entry was
+    // never written would fail with no trace.
+    const pending = await readPendingStarts();
+    pending.set(cwd, {
       name: project.projectName,
       projectKey: cwd,
       logStart,
@@ -156,11 +184,8 @@ export async function startLoginProjectsAfterBoot(
       kind: install ? "install" : "start",
       ignorePids: [],
     });
+    await writePendingStarts(pending).catch(() => {});
   }
-  if (started.size === 0) return;
-  const pending = await readPendingStarts();
-  for (const [cwd, entry] of started) pending.set(cwd, entry);
-  await writePendingStarts(pending);
 }
 
 // Turn it on or off from a row's action, adopt the written list, and say what

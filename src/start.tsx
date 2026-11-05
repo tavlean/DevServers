@@ -23,12 +23,16 @@ import {
 } from "@raycast/utils";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { promisify } from "node:util";
 import { DEFAULT_TERMINAL } from "./constants";
-import { LOGIN_KEY, LoginProject, toggleStartAtLogin } from "./loginStarts";
+import {
+  LOGIN_KEY,
+  LoginProject,
+  NO_LOGIN_PROJECTS,
+  toggleStartAtLogin,
+} from "./loginStarts";
 import {
   RecentProject,
   STORAGE_KEY,
@@ -36,6 +40,7 @@ import {
   removeRecent,
 } from "./recents";
 import {
+  canPlanStart,
   canonicalCwd,
   directoryExists,
   fetchServers,
@@ -43,6 +48,7 @@ import {
   isShopifyAppRoot,
   isShopifyThemeRoot,
   missingDependencies,
+  tildePath,
 } from "./servers";
 import { toolColor, toolLabel } from "./tool-display";
 import { DevServer } from "./types";
@@ -418,11 +424,6 @@ function RecentRow({
   );
 }
 
-function tildePath(p: string): string {
-  const home = os.homedir();
-  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-}
-
 // A row in the Start at Login section: the project, and whether it is up.
 // Unlike the recents, running and missing projects stay listed here, so the
 // section answers "what comes up when I restart?" in full.
@@ -438,14 +439,24 @@ function LoginRow({
   onRemove: () => void;
 }) {
   const exists = directoryExists(project.cwd);
+  // A folder with nothing the extension knows how to run (its dev script
+  // renamed, say) is skipped at login just like a missing one, so it is
+  // named here rather than passing for "Not running".
+  const startable = exists && canPlanStart(project.cwd);
   const status: List.Item.Accessory = running
     ? { tag: { value: "Running", color: Color.Green } }
-    : exists
-      ? { text: "Not running" }
-      : {
+    : !exists
+      ? {
           tag: { value: "Folder missing", color: Color.Red },
           tooltip: "Skipped at login until the folder is back",
-        };
+        }
+      : !startable
+        ? {
+            tag: { value: "Can't start", color: Color.Orange },
+            tooltip:
+              "No dev, start or develop script, so it is skipped at login",
+          }
+        : { text: "Not running" };
   async function start() {
     await launchSpawn([{ cwd: project.cwd, name: project.projectName }], {
       autoOpen,
@@ -462,26 +473,28 @@ function LoginRow({
       accessories={[status]}
       actions={
         <ActionPanel>
-          {!running && exists && (
+          {!running && startable && (
             <Action
               title="Start Dev Server"
               icon={Icon.Play}
               onAction={start}
             />
           )}
-          {exists && (
-            <ActionPanel.Section>
+          <ActionPanel.Section>
+            {exists && (
               <Action.ShowInFinder
                 path={project.cwd}
                 shortcut={{ modifiers: ["cmd", "shift"], key: "f" }}
               />
-              <Action.CopyToClipboard
-                title="Copy Path"
-                content={project.cwd}
-                shortcut={{ modifiers: ["cmd"], key: "c" }}
-              />
-            </ActionPanel.Section>
-          )}
+            )}
+            {/* Kept for a missing folder too, so that row's ↵ copies the path
+                rather than landing on the toggle below. */}
+            <Action.CopyToClipboard
+              title="Copy Path"
+              content={project.cwd}
+              shortcut={{ modifiers: ["cmd"], key: "c" }}
+            />
+          </ActionPanel.Section>
           {/* Last, so neither ↵ nor ⌘↵ can turn it off by accident. */}
           <ActionPanel.Section>
             <Action
@@ -678,8 +691,10 @@ function PickerView({
     await setRecents(await removeRecent(targetCwd));
   }
 
-  const { value: loginProjects = [], setValue: setLoginProjects } =
-    useLocalStorage<LoginProject[]>(LOGIN_KEY, []);
+  const {
+    value: loginProjects = NO_LOGIN_PROJECTS,
+    setValue: setLoginProjects,
+  } = useLocalStorage<LoginProject[]>(LOGIN_KEY, NO_LOGIN_PROJECTS);
   const loginCwds = useMemo(
     () => new Set(loginProjects.map((p) => canonicalCwd(p.cwd))),
     [loginProjects],
