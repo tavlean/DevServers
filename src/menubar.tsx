@@ -14,7 +14,13 @@ import { useFrecencySorting, useLocalStorage } from "@raycast/utils";
 import * as path from "node:path";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DEFAULT_TERMINAL } from "./constants";
-import { startLoginProjectsAfterBoot } from "./loginStarts";
+import {
+  LOGIN_KEY,
+  LoginProject,
+  NO_LOGIN_PROJECTS,
+  setStartAtLogin,
+  startLoginProjectsAfterBoot,
+} from "./loginStarts";
 import {
   readPendingStarts,
   resolvingServer,
@@ -23,6 +29,7 @@ import {
 import { RecentProject, STORAGE_KEY, recordRunning } from "./recents";
 import {
   byRecency,
+  canPlanStart,
   canonicalCwd,
   directoryExists,
   fetchServers,
@@ -212,6 +219,43 @@ async function launchRecent(recent: RecentProject): Promise<void> {
   });
 }
 
+// The submenu's Start at Login switch. The label says what a click does, as
+// in the dashboard, since a menu item has no checkmark to show the state.
+// Storage first, HUD second: the write is Raycast API work, which is what
+// keeps a clicked menu bar command alive, so the HUD only ever reports a
+// change that landed.
+function LoginToggleItem({
+  server,
+  atLogin,
+  stayLoadedWhile,
+}: {
+  server: DevServer;
+  atLogin: boolean;
+  stayLoadedWhile: (work: () => Promise<void>) => void;
+}) {
+  return (
+    <MenuBarExtra.Item
+      title={atLogin ? "Don't Start at Login" : "Start at Login"}
+      icon={menuIcon("power")}
+      onAction={() => {
+        stayLoadedWhile(async () => {
+          const on = !atLogin;
+          const name = server.projectName;
+          try {
+            await setStartAtLogin({ cwd: server.cwd, projectName: name }, on);
+          } catch {
+            await showHUD("Couldn't change Start at Login");
+            return;
+          }
+          await showHUD(
+            on ? `${name} will start at login` : `${name} won't start at login`,
+          );
+        });
+      }}
+    />
+  );
+}
+
 // One empty list for the whole module. A `= []` default in the destructure
 // below made a new array on every render while storage was still loading,
 // which changed every memo keyed on it each time.
@@ -227,6 +271,11 @@ export default function Command() {
     STORAGE_KEY,
     NO_RECENTS,
   );
+  // Read-only here: a click closes the menu, and the next open reads storage
+  // afresh, so there is no on-screen state to keep in step with a toggle.
+  const { value: loginProjects = NO_LOGIN_PROJECTS } = useLocalStorage<
+    LoginProject[]
+  >(LOGIN_KEY, NO_LOGIN_PROJECTS);
 
   // Raycast unloads a menu bar command shortly after its menu closes, and
   // clicking an item is what closes it. Short async chains survive the click
@@ -306,6 +355,25 @@ export default function Command() {
 
   const runningCwds = useMemo(
     () => new Set(servers.map((server) => canonicalCwd(server.cwd))),
+    [servers],
+  );
+
+  // Stored paths are already canonical (setStartAtLogin writes them so).
+  const loginCwds = useMemo(
+    () => new Set(loginProjects.map((p) => p.cwd)),
+    [loginProjects],
+  );
+
+  // Folders the extension knows how to start. Only these get the Start at
+  // Login item, as in the dashboard: marking a server started some way the
+  // extension cannot repeat would promise a start that never comes.
+  const plannable = useMemo(
+    () =>
+      new Set(
+        [...new Set(servers.map((s) => s.cwd))].filter((cwd) =>
+          canPlanStart(cwd),
+        ),
+      ),
     [servers],
   );
 
@@ -538,6 +606,16 @@ export default function Command() {
                       void open(server.cwd, terminalApp);
                     }}
                   />
+                  {plannable.has(server.cwd) ? (
+                    <MenuBarExtra.Separator />
+                  ) : null}
+                  {plannable.has(server.cwd) ? (
+                    <LoginToggleItem
+                      server={server}
+                      atLogin={loginCwds.has(canonicalCwd(server.cwd))}
+                      stayLoadedWhile={stayLoadedWhile}
+                    />
+                  ) : null}
                 </MenuBarExtra.Submenu>
               ))}
               {projectServers.length >= 2 ? (
