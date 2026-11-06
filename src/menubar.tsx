@@ -358,9 +358,11 @@ export default function Command() {
     [servers],
   );
 
-  // Stored paths are already canonical (setStartAtLogin writes them so).
+  // Canonicalised again, as the dashboard does: a path stored when realpath
+  // failed, or a folder since moved behind a symlink, must not read as
+  // unmarked here while the dashboard calls it marked.
   const loginCwds = useMemo(
-    () => new Set(loginProjects.map((p) => p.cwd)),
+    () => new Set(loginProjects.map((p) => canonicalCwd(p.cwd))),
     [loginProjects],
   );
 

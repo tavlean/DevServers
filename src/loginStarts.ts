@@ -67,6 +67,11 @@ export function setStartAtLogin(
   on: boolean,
 ): Promise<LoginProject[]> {
   const work = async () => {
+    // Asked for up front, in case the boot needs seeding below: sysctl is a
+    // child process, and in a clicked menu bar command it must overlap the
+    // storage read rather than run after it, since a child process alone does
+    // not keep the command alive (see the Kill item in menubar.tsx).
+    const boot = on ? bootId() : Promise.resolve(null);
     const cwd = canonicalCwd(project.cwd);
     const rest = (await readLoginProjects()).filter(
       (p) => canonicalCwd(p.cwd) !== cwd,
@@ -79,8 +84,8 @@ export function setStartAtLogin(
     // before that first run would make the next restart look like a first
     // run, and the project would not start until the restart after.
     if (on && (await recordedBoot()) === undefined) {
-      const boot = await bootId();
-      if (boot !== null) await LocalStorage.setItem(BOOT_KEY, boot);
+      const id = await boot;
+      if (id !== null) await LocalStorage.setItem(BOOT_KEY, id);
     }
     await LocalStorage.setItem(LOGIN_KEY, JSON.stringify(next));
     return next;
